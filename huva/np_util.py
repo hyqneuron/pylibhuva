@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
+import random
 cmap = plt.get_cmap('jet')
 
 def get_jet(img, label):
@@ -49,3 +50,4 @@ def add_black_band(img_np):
     img_np[-height:, :] = 0
     img_np[:,  -width:] = 0
     return width, height
+
