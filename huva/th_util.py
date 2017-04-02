@@ -85,7 +85,7 @@ class MonitoredAdam(torch.optim.Adam):
         if closure is not None:
             loss = closure()
 
-        self.update_norm = 0
+        self.update_sqr = 0
 
         for group in self.param_groups:
             for p in group['params']:
@@ -119,14 +119,14 @@ class MonitoredAdam(torch.optim.Adam):
                 step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
 
                 if monitor_update:
-                    self.update_norm += step_size * (exp_avg.div(denom)).norm() **2
+                    self.update_sqr += (step_size * exp_avg.div(denom).norm()) **2
 
                 p.data.addcdiv_(-step_size, exp_avg, denom)
 
                 if group['weight_decay'] != 0 and self.separate_decay:
                     p.data.add_(-group['lr'] * group['weight_decay'], p.data)
 
-        self.update_norm = math.sqrt(self.update_norm+1e-8)
+        self.update_norm = math.sqrt(self.update_sqr+1e-8)
         return loss
 
 class MonitoredSGD(torch.optim.SGD):
@@ -141,7 +141,7 @@ class MonitoredSGD(torch.optim.SGD):
         if closure is not None:
             loss = closure()
 
-        self.update_norm = 0
+        self.update_sqr = 0
 
         for group in self.param_groups:
             weight_decay = group['weight_decay']
@@ -168,10 +168,10 @@ class MonitoredSGD(torch.optim.SGD):
                         d_p = buf
 
                 if monitor_update:
-                    self.update_norm += d_p.norm()**2 * group['lr']
+                    self.update_sqr += (group['lr'] * d_p.norm())**2
                 p.data.add_(-group['lr'], d_p)
 
-        self.update_norm = math.sqrt(self.update_norm+1e-8)
+        self.update_norm = math.sqrt(self.update_sqr+1e-8)
         return loss
 
 class MonitoredRMSprop(torch.optim.RMSprop):
@@ -186,7 +186,7 @@ class MonitoredRMSprop(torch.optim.RMSprop):
         if closure is not None:
             loss = closure()
 
-        self.update_norm = 0
+        self.update_sqr = 0
 
         for group in self.param_groups:
             for p in group['params']:
@@ -226,15 +226,15 @@ class MonitoredRMSprop(torch.optim.RMSprop):
                     buf.mul_(group['momentum']).addcdiv_(grad, avg)
                     p.data.add_(-group['lr'], buf)
                     if monitor_update:
-                        self.update_norm += buf.norm()**2 * group['lr']
+                        self.update_sqr += (group['lr'] * buf.norm())**2
                 else:
                     #p.data.addcdiv_(-group['lr'], grad, avg)
                     normed_grad = grad.div(avg)
                     p.data.add_(-group['lr'], normed_grad)
                     if monitor_update:
-                        self.update_norm += normed_grad.norm()**2 * group['lr']
+                        self.update_sqr += (group['lr'] * normed_grad.norm())**2
 
-        self.update_norm = math.sqrt(self.update_norm+1e-8)
+        self.update_norm = math.sqrt(self.update_sqr+1e-8) * group['lr']
         return loss
 
 class CachedSequential(torch.nn.Sequential):
