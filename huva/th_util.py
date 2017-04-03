@@ -1,5 +1,5 @@
-import torch
 import cv2
+import torch
 import matplotlib.pyplot as plt
 from np_util import *
 
@@ -308,3 +308,12 @@ def get_all_utilization(module, threshold=1e-20, result=None, prefix=''):
         elif hasattr(sub_mod, '_modules'):
             get_all_utilization(sub_mod, threshold, result=result, prefix=full_name+'/')
     return result
+
+"""
+build a tracer:
+* unit output mean, std, histogram
+* outgoing weight distribution, how many units in the next layer use     this unit
+* incoming weight distribution, how many units in the prev layer used by this unit
+* received gradient distribution
+* outgoing gradient distribution
+"""
