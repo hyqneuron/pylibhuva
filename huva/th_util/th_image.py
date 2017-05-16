@@ -2,6 +2,7 @@ import cv2
 import torch
 from PIL import Image
 
+
 def th_get_jet(img, label):
     img_np = bgr_to_numpy(img)
     H, W         = label.size(1), label.size(2)
@@ -10,12 +11,14 @@ def th_get_jet(img, label):
     jet = get_jet(img_np, cv2.resize(label_np, (img_W, img_H)))
     return jet
 
+
 def img_to_numpy(img):
     """
     img of range[0,1] shape 3xHxW
     return uint8 numpy array HxWx3
     """
     return (img*255).numpy().astype('uint8').transpose([1,2,0])
+
 
 def bgr_to_numpy(torch_bgr_img, rgb=False):
     """
@@ -27,11 +30,13 @@ def bgr_to_numpy(torch_bgr_img, rgb=False):
         result = result[:,:,[2,1,0]]
     return result
 
+
 def save_bgr_3hw(path, img):
     """
     img is a 3xHxW torch.Tensor, values range [0,255]
     """
     return cv2.imwrite(path, img.numpy().transpose([1,2,0]))
+
 
 def load_bgr_3hw(path):
     """
@@ -39,8 +44,10 @@ def load_bgr_3hw(path):
     """
     return torch.from_numpy(cv2.imread(path).transpose([2,0,1]))
 
+
 def imshow_th(img_th):
     imshow_np(torch.img_to_numpy(img_th))
+
 
 def tile_images(imgs, rows, cols, padding=0):
     """
@@ -57,12 +64,14 @@ def tile_images(imgs, rows, cols, padding=0):
         tiled[:, y:y+H, x:x+W] = imgs[i]
     return tiled
 
+
 def save_image(img, filename):
-    img = img.cpu()
+    img = img.cpu().float()
     img = img -  img.min()
     img = img / (img.max() + 1e-8)
-    img = img.mul(255).byte().permute(1,2,0)
+    img = img.mul(255).byte().permute(1,2,0).squeeze()
     Image.fromarray(img.numpy()).save(filename)
+
 
 def enlarge_image_pixel(img, times):
     """

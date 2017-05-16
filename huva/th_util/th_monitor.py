@@ -12,7 +12,9 @@ Monitored optimizers:
 L1 decay:
 """
 
+
 class MonitoredAdam(torch.optim.Adam):
+
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
                  weight_decay=0, separate_decay=False):
         defaults = dict(lr=lr, betas=betas, eps=eps,
@@ -20,7 +22,7 @@ class MonitoredAdam(torch.optim.Adam):
         torch.optim.Optimizer.__init__(self, params, defaults)
         self.separate_decay = separate_decay
 
-    def step(self, closure=None, monitor_update=True):
+    def step(self, closure=None, update_monitor=False):
         """Performs a single optimization step.
 
         Arguments:
@@ -31,10 +33,10 @@ class MonitoredAdam(torch.optim.Adam):
         if closure is not None:
             loss = closure()
 
-        self.update_sqr = 0
+        if update_monitor:
+            self.update_sqr = 0
 
         for group in self.param_groups:
-            L1 = weight_decay != 0 and 'L1' in group and group['L1']
             for p in group['params']:
                 grad = p.grad.data
                 state = self.state[p]
@@ -65,7 +67,7 @@ class MonitoredAdam(torch.optim.Adam):
                 bias_correction2 = 1 - beta2 ** state['step']
                 step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
 
-                if monitor_update:
+                if update_monitor:
                     self.update_sqr += (step_size * exp_avg.div(denom).norm()) **2
 
                 p.data.addcdiv_(-step_size, exp_avg, denom)
@@ -73,10 +75,13 @@ class MonitoredAdam(torch.optim.Adam):
                 if group['weight_decay'] != 0 and self.separate_decay:
                     p.data.add_(-group['lr'] * group['weight_decay'], p.data)
 
-        self.update_norm = math.sqrt(self.update_sqr+1e-8)
+        if update_monitor:
+            self.update_norm = math.sqrt(self.update_sqr+1e-8)
         return loss
 
+
 class MonitoredRMSprop(torch.optim.RMSprop):
+
     def step(self, closure=None, monitor_update=True):
         """Performs a single optimization step.
 
@@ -139,7 +144,9 @@ class MonitoredRMSprop(torch.optim.RMSprop):
         self.update_norm = math.sqrt(self.update_sqr+1e-8) * group['lr']
         return loss
 
+
 class MonitoredNorms(object):
+
     def __init__(self):
         """
         - w_norm: norm of the parameter
@@ -157,12 +164,14 @@ class MonitoredNorms(object):
 
 from torch.optim.optimizer import required
 
+
 class MonitoredSGD(torch.optim.SGD):
     """
     MonitoredSGD adds several features to torch.optim.SGD:
     - tracks size of total update in self.update_norm
     - tracks MonitoredNorms for every parameter
     """
+
     def __init__(self, params, lr=required, momentum=0, dampening=0,
                  weight_decay=0, nesterov=False):
         defaults = dict(lr=lr, momentum=momentum, dampening=dampening,
@@ -170,6 +179,7 @@ class MonitoredSGD(torch.optim.SGD):
         if nesterov and (momentum <= 0 or dampening != 0):
             raise ValueError("Nesterov momentum requires a momentum and zero dampening")
         super(torch.optim.SGD, self).__init__(params, defaults)
+
     def step(self, closure=None, update_monitor=False):
         """Performs a single optimization step.
 
@@ -249,12 +259,14 @@ class MonitoredSGD(torch.optim.SGD):
         self.update_norm = math.sqrt(self.update_sqr+1e-8)
         return loss
 
+
 class MonitoredSpecificSGD(torch.optim.SGD):
     """
     MonitoredSGD adds several features to torch.optim.SGD:
     - tracks size of total update in self.update_norm
     - tracks MonitoredNorms for every parameter
     """
+
     def __init__(self, params, lr=required, momentum=0, dampening=0,
                  weight_decay=0, specific_mode=None, d_p_momentum=0.98, mult_weight_norm=True):
         defaults = dict(lr=lr, momentum=momentum, dampening=dampening,

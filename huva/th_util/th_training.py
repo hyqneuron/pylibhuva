@@ -1,6 +1,7 @@
 import torch
 import math
 
+
 def get_num_correct(output, labels):
     """
     Compute number of correrct predictions for CrossEntropyLoss
@@ -15,6 +16,7 @@ def get_num_correct(output, labels):
 def set_learning_rate(optimizer, lr):
     for group in optimizer.param_groups:
         group['lr'] = lr
+
 
 def decay_learning_rate(optimizer, decay):
     for group in optimizer.param_groups:

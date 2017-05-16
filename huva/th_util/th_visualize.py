@@ -13,14 +13,17 @@ We need the layers to keep output, after that, we need the particular sample whi
 1. run collect_output_over_loader 
 """
 
-def collect_output_and_guided_backprop(model, layer, unit_idx, dataset, loader, max_batches=99999, top_k=1, backward_thresh=True):
+
+def collect_output_and_guided_backprop(
+        model, layer, unit_idx, dataset, loader, max_batches=99999, top_k=1, backward_thresh=True, mode='output'):
     name_layer = {name: module for name, module in model.named_modules() if module is layer}
-    name_output = collect_output_over_loader(model, name_layer, loader, max_batches=max_batches)
+    name_output = collect_output_over_loader(model, name_layer, loader, max_batches=max_batches, mode=mode)
     assert len(name_output)==1
     name, output = name_output.items()[0]
     return visualize_layer_unit(model, layer, output, unit_idx, dataset, top_k=top_k, backward_thresh=backward_thresh)
 
-def guided_backprop_layer_unit(model, layer, output, unit_idx, dataset, top_k=1, backward_thresh=True):
+
+def guided_backprop_layer_unit(model, layer, output, unit_idx, dataset, top_k=1, backward_thresh=True, selector=0):
     """
     Visualize a unit's top-activation, using guided back-propagation
 
@@ -42,10 +45,13 @@ def guided_backprop_layer_unit(model, layer, output, unit_idx, dataset, top_k=1,
     k_n     = n_maxval.squeeze().sort(0, descending=True)[1][:K]    # sort samples by max, take top-K
     k_maxid = n_maxid.squeeze()[k_n]
     """ group top-k samples into batch """
-    batch_sizes = torch.Size([K] + list(dataset[0][0].size()))
+    batch_sizes = torch.Size([K] + list((dataset[0] if selector=='all' else dataset[0][selector]).size()))
     k_sample = torch.Tensor(batch_sizes)
     for k in xrange(K): # j indexes top-activation
-        k_sample[k] = dataset[k_n[k]][0]
+        if selector=='all':
+            k_sample[k] = dataset[k_n[k]]
+        else:
+            k_sample[k] = dataset[k_n[k]][selector]
     """ apply hooks to backward passes """
     backward_hooks=[]
     if backward_thresh:
@@ -68,7 +74,10 @@ def guided_backprop_layer_unit(model, layer, output, unit_idx, dataset, top_k=1,
     v_output = model(v_inputs)
     output_grad = layer.output.data.clone().zero_()
     for k in xrange(K):
-        output_grad[k, unit_idx].view(-1)[k_maxid[k]] = 1
+        if output_grad.dim()==2: # MLP
+            output_grad[k, unit_idx] = 1
+        else: # CNN
+            output_grad[k, unit_idx].view(-1)[k_maxid[k]] = 1
     v_layer_output = layer.output
     v_layer_output.backward(output_grad)
     """ remove hooks """
@@ -77,32 +86,28 @@ def guided_backprop_layer_unit(model, layer, output, unit_idx, dataset, top_k=1,
         h.remove()
     return v_inputs.data, v_inputs.grad.data
 
-def collect_output_save_gbp_for_layer(model, layer, dataset, loader, path_folder, max_batches=20, K=10):
+
+def collect_output_save_gbp_for_layer(
+        model, layer, dataset, loader, path_folder, max_batches=20, K=10, selector=0, mode='output'):
     name_layer = {name:module for name,module in model.named_modules() if module is layer}
     name = name_layer.keys()[0]
-    name_output = collect_output_over_loader(model, name_layer, loader, max_batches=20)
+    name_output = collect_output_over_loader(model, name_layer, loader, max_batches=20, selector=selector, mode=mode)
     output = name_output[name]
     num_units = output.size(1)
     if not os.path.exists(path_folder):
         os.mkdir(path_folder)
     for i in xrange(num_units):
-        inputs, grads = guided_backprop_layer_unit(model, layer, output, i, dataset, top_k=K)
+        inputs, grads = guided_backprop_layer_unit(model, layer, output, i, dataset, top_k=K, selector=selector)
         inputs = normalize(inputs)
         grads  = normalize(grads)
+        if inputs.dim() == 2: # MLP data
+            num_inputs = inputs.size(1)
+            side_len = int(math.sqrt(num_inputs))
+            assert side_len**2 == num_inputs, "Don't know how to handle MLP input that's not sqaure"
+            inputs = inputs.contiguous().view(inputs.size(0), 1, side_len, side_len)
+            grads  = grads .contiguous().view(grads .size(0), 1, side_len, side_len)
         images = torch.cat([inputs, grads], 0)
         tiled = tile_images(images, rows=2, cols=K, padding=4)
         tiled = enlarge_image_pixel(tiled, 5)
         savepath = os.path.join(path_folder, 'gbp_{}_{}.jpg'.format(name, i))
         save_image(tiled, savepath)
-        """
-        plt.close()
-        f, axs = plt.subplots(2, K, figsize=(19,5))
-        for j in xrange(K):
-            axs[0,j].imshow(inputs[j].cpu().numpy().transpose([1,2,0]))
-            axs[0,j].axis('off')
-            axs[1,j].imshow(grads[j].cpu().numpy().transpose([1,2,0]))
-            axs[1,j].axis('off')
-        plt.tight_layout()
-        plt.savefig(savepath)
-        plt.close()
-        """

@@ -1,13 +1,18 @@
 import torch
 from torch.autograd import Variable
+from th_image import tile_images, save_image, enlarge_image_pixel
 import math
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
+
 
 def normalize(tensor):
     tensor = tensor - tensor.min()
     tensor = tensor / (tensor.max() + 1e-8)
     return tensor
+
 
 def get_model_param_norm(model):
     """ get parameter length of a model """
@@ -16,6 +21,7 @@ def get_model_param_norm(model):
 """ 
 ========================= Layer unit utilization statistics ===========================================
 """
+
 def get_layer_utilization(layer):
     """
     Analyze whether the units in previous layer are dead
@@ -27,6 +33,7 @@ def get_layer_utilization(layer):
     W_mean = W.view(W.size(0), W.size(1), -1).abs().mean(2).squeeze(2)
     W_summary = W_mean.mean(0).squeeze(0)
     return W_summary
+
 
 def get_model_utilization(module, threshold=1e-20, result=None, prefix=''):
     """
@@ -45,6 +52,7 @@ def get_model_utilization(module, threshold=1e-20, result=None, prefix=''):
 """ 
 ========================= Layer output statistics ====================================================
 """
+
 def make_layer_keep_output(layer):
     """
     An obsolete method for keeping the output of a layer after a forward pass. Output is kept at layer.output
@@ -54,7 +62,8 @@ def make_layer_keep_output(layer):
         layer.output = output
     return layer.register_forward_hook(forward_keep_output)
 
-def collect_output_over_loader(model, name_layer, loader, max_batches=999999, selector=0, flatten=False):
+
+def collect_output_over_loader(model, name_layer, loader, max_batches=999999, selector=0, flatten=False, mode='output'):
     """
     loader: the loader from which to extract batches, should not use shuffling
     max_batches: maximum number of batches to collect
@@ -73,14 +82,15 @@ def collect_output_over_loader(model, name_layer, loader, max_batches=999999, se
         if flatten:
             selected = selected.view(selected.size(0), -1)
         batches.append(selected)
-    return collect_output_over_batches(model, name_layer, batches)
+    return collect_output_over_batches(model, name_layer, batches, mode)
 
 
-def collect_output_over_batches(model, name_layer, batches):
+def collect_output_over_batches(model, name_layer, batches, mode='output'):
     """
     model: the model whose output we collect
     name_layer: {str_name:layer}, only collect output from layers listed here
     batches: [Tensor], a list of batch inputs
+    mode: 'output' collects output, 'input' collects input instead
     """
     name_output = {}    # every target layer has an output buffer
     name_hook = {}      # every target layer has a forward_hook, which collects output on each pass
@@ -88,17 +98,26 @@ def collect_output_over_batches(model, name_layer, batches):
     batch_size = batches[0].size(0)
     """ register output-saving hooks """
     for name, layer in name_layer.iteritems():
-        def save_output(module, input, output, name=name, layer=layer): # stupid python scoping
+        def save_output(module, input, output, name=name, layer=layer, mode=mode): # stupid python scoping
             assert module == layer
+            if mode=='output':
+                target = output.data.cpu()
+            elif mode=='input':
+                if type(input) in [tuple, list]: 
+                    assert len(input) == 1
+                    input = input[0]
+                target = input.data.cpu()
+            else:
+                assert False, 'unknown mode: {}'.format(mode)
             # first run
             if name not in name_output:
-                name_output[name] = output.data.cpu()
+                name_output[name] = target
                 sizel = list(name_output[name].size())
                 sizel[0] = total_size # capture the NxCxHxW, but change N to total_size
                 name_output[name].resize_(sizel) 
             # subsequent runs
             else:
-                name_output[name][i*batch_size:i*batch_size+inputs.size(0)] = output.data.cpu()
+                name_output[name][i*batch_size:i*batch_size+inputs.size(0)] = target
         name_hook[name] = layer.register_forward_hook(save_output)
     """ collect data over batches """
     for i, inputs in enumerate(batches):
@@ -109,7 +128,9 @@ def collect_output_over_batches(model, name_layer, batches):
         hook.remove()
     return name_output
 
+
 class OutputStats(object):
+
     def __init__(self, outputt, output_std, order_std, output_skew, order_skew, output_kurtosis, order_kurtosis, covariance):
         self.outputt = outputt
         self.std      = output_std
@@ -119,6 +140,7 @@ class OutputStats(object):
         self.skew_order= order_skew
         self.kurtosis_order = order_kurtosis
         self.covariance = covariance
+
 
 def get_outputt_kurtosis(outputt):
     """
@@ -130,6 +152,7 @@ def get_outputt_kurtosis(outputt):
     denominator= outputt.var(1).pow(2)
     return numerator / (denominator + 0.0000001)
 
+
 def get_outputt_skewedness(outputt):
     """
     skewedness = E[(x-mu)**3] / E[(x-mu)**2] **1.5
@@ -140,11 +163,13 @@ def get_outputt_skewedness(outputt):
     denominator= outputt.var(1).pow(1.5)
     return numerator / (denominator + 0.0000001)
 
+
 def get_outputt_covariance(outputt):
     shifted = outputt - outputt.mean(1).expand_as(outputt)
     normed  = shifted / shifted.std(1).expand_as(shifted)
     covariance = normed.mm(normed.transpose(0,1)) / normed.size(1)
     return covariance
+
 
 def get_output_stats(output):
     """
@@ -168,10 +193,12 @@ def get_output_stats(output):
     covariance = get_outputt_covariance(outputt)
     return OutputStats(outputt, output_std, order_std, output_skew, order_skew, output_kurtosis, order_kurtosis, covariance)
 
+
 def show_output_hist(outputt, i, bins=40):
     """ visualize i'th ordered outputt's histogram, i.e. outputt[order[i]] """
     plt.hist(outputt[i].numpy(), bins=bins)
     plt.show()
+
 
 def save_output_hist(outputt, i, path, bins=40):
     """ save i'th ordered outputt's histogram to path """
@@ -180,22 +207,24 @@ def save_output_hist(outputt, i, path, bins=40):
     plt.savefig(path)
     plt.close()
 
+
 def save_all_output_hist(outputt, output_std, order, path_pattern, bins=40):
     for order_i in xrange(order.size(0)):
         i = order[order_i]
         save_output_hist(outputt, order, i, path_pattern.format(order_i, output_std[i]), bins=bins)
 
-def collect_output_save_hist_for_layer(model, layer, loader, path_folder, max_batches=20):
+
+def collect_output_save_hist_for_layer(model, layer, loader, path_folder, max_batches=20, selector=0, mode='output'):
     name_layer = {name:module for name,module in model.named_modules() if module is layer}
     name = name_layer.keys()[0]
-    name_output = collect_output_over_loader(model, name_layer, loader, max_batches=max_batches)
+    name_output = collect_output_over_loader(model, name_layer, loader, max_batches=max_batches, selector=selector, mode=mode)
     output = name_output[name]
     stats = get_output_stats(output)
     num_units = stats.outputt.size(0)
     if not os.path.exists(path_folder):
         os.mkdir(path_folder)
     for i in xrange(num_units):
-        savepath = os.path.join(path_folder, 'hist_{}_{}.jpg'.format(name, i))
+        savepath = os.path.join(path_folder, 'hist_{}_{}_{}.jpg'.format(mode, name, i))
         save_output_hist(stats.outputt, i, savepath)
 
 """ 
@@ -212,6 +241,7 @@ def get_weight_cosine(W):
     normed = W / norm.expand_as(W)
     dotted = normed.mm(normed.t())
     return dotted
+
 
 def show_conv1_weights(conv1):
     W = conv1.weight.data.cpu() # [Cout, 3, k, k]
@@ -230,6 +260,17 @@ def show_conv1_weights(conv1):
     grid = normalize(grid)
     plt.imshow(grid.numpy().transpose([1,2,0]))
     plt.show()
+
+
+def save_mlp_decoder_weights(w, filename):
+    w = w.t().contiguous()
+    assert w.dim()==2
+    num_in, num_out = w.size
+    num_side = int(math.sqrt(num_out))
+    assert num_side**2 == num_out, 'cannot handle non-square decoder'
+    w = w.t().contiguous().view(num_in, 1, num_side, num_side)
+    save_image(w, filename)
+
 
 """
 ========================= Model Summary Report =======================================================
