@@ -316,7 +316,7 @@ class FakeCoder(PSequential):
             linear, resp = Q
             Q_cat = resp if resp is not None else F.softmax(linear)
             loss_cat  = kld_for_uniform_categorical(Q_cat)
-            return loss_cat / logit.size(0) 
+            return loss_cat / linear.size(0) 
         else:
             return Variable(Q[0].data.new().resize_(1).fill_(0)) # no loss, that's why it's fake
 
