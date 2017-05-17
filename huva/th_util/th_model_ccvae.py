@@ -229,9 +229,9 @@ class WTACoder(PSequential):
         else:
             cat_mask = Variable(plain_max(P_cat.data))
         full_mask = self.expand_mask(cat_mask)
-        std = var.sqrt()
-        noise = Variable(std.data.new().resize_as_(std.data).normal_())
         if self.use_gaus:
+            std = var.sqrt()
+            noise = Variable(std.data.new().resize_as_(std.data).normal_())
             gaus = mean + (noise * std)
         else:
             gaus = mean
@@ -314,7 +314,7 @@ class FakeCoder(PSequential):
         if self.KLD:
             assert P==None
             linear, resp = Q
-            Q_cat = resp
+            Q_cat = resp if resp is not None else T.softmax(linear)
             loss_cat  = kld_for_uniform_categorical(Q_cat)
             return loss_cat / logit.size(0) 
         else:

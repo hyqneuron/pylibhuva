@@ -245,9 +245,9 @@ class ChannelToSpace(torch.nn.Module):
 
 class MultScalar(torch.nn.Module):
 
-    def __init__(self, scalar=1, learnable=True):
+    def __init__(self, mult=1, learnable=True):
         super(MultScalar, self).__init__()
-        self.mult = scalar
+        self.mult = mult
         self.learnable = learnable
         if learnable:
             weight = Parameter(torch.Tensor(1).fill_(scalar))
