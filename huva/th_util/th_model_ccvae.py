@@ -314,7 +314,7 @@ class FakeCoder(PSequential):
         if self.KLD:
             assert P==None
             linear, resp = Q
-            Q_cat = resp if resp is not None else T.softmax(linear)
+            Q_cat = resp if resp is not None else F.softmax(linear)
             loss_cat  = kld_for_uniform_categorical(Q_cat)
             return loss_cat / logit.size(0) 
         else:
