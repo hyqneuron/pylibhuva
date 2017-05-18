@@ -118,6 +118,7 @@ def kld_for_uniform_categorical(q):
     if True: # if debug
         m = q
         if isinstance(m, Variable): m = m.data
+        m.add_(1e-7)
         assert m.gt(0).all() # all q must > 0
         assert (m.sum(1)-1).abs().lt(1e-4).all(), 'summed to.. {}'.format(m.sum(1)) # all sum to 1
     C = q.size(1) # number of channels

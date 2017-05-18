@@ -118,7 +118,7 @@ class MultScalar(torch.nn.Module):
         self.mult = mult
         self.learnable = learnable
         if learnable:
-            weight = Parameter(torch.Tensor(1).fill_(scalar))
+            weight = Parameter(torch.Tensor(1).fill_(mult))
             self.weight = weight
 
     def forward(self, x):

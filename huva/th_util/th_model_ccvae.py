@@ -5,6 +5,7 @@ from torch.autograd import Variable
 from .th_model import *
 from .th_math import *
 from .th_functions import FuncSTCategorical, FuncOneHotSTCategorical
+import os # for debugging with os.getenv
 
 """
 prototype:
@@ -167,6 +168,7 @@ class GaussianCoder(nn.Sequential):
         noise = Variable(std.data.new().resize_as_(std.data).normal_())
         return mean + noise * std
 
+
 class WTACoder(PSequential):
     def __init__(self, num_latent, layers, 
             mean_normalizer=None, stochastic=True, num_continuous=0, bypass_mode='BNM', mult=1, use_gaus=True):
@@ -191,28 +193,32 @@ class WTACoder(PSequential):
         # FIXME debugging
         assert self.num_latent==self.num_wta==256
         assert self.num_continuous == 0
+        #self.logit_mult = MultScalar(10, learnable=True) # D7
 
     def forward(self, x):
         inp = x
         for layer in self.layers:
             inp = layer(inp)
         mean, logvar = split_gaussian(inp, self.num_latent)
+        var = logvar.exp() # D5 * 0.1
         cat_input = mean[:, :self.num_wta]
         logit = self.mean_normalizer(cat_input.contiguous())
         mean = mean.clone()
+        #logit = self.logit_mult(logit)
         mean[:, :self.num_wta] = logit
-        P_cat = F.softmax(logit) # F.softmax covers both 2D and 4D
-        return (mean, logvar, logvar.exp(), P_cat)
+        P_cat = F.softmax(logit*10) # F.softmax covers both 2D and 4D # D3, D7
+        # P_cat = F.softmax(logit / var ) # divide by variance # D4
+        """ adaptive mean """
+        #self.cat_mean = mean.mean(0)
+        return (mean, logvar, var, P_cat)
 
     def get_loss_z(self, Q, P=None):
         Q_gaus, Q_cat = Q[:-1], Q[-1]
         assert P is None
         loss_cat  = kld_for_uniform_categorical(Q_cat)
-        loss_gaus = kld_for_unit_gaussian(*Q_gaus, do_sum=False)
-        full_mask = self.expand_mask(Q_cat)
-        loss_gaus = (loss_gaus * full_mask).sum() if self.use_gaus else 0
-        assert not self.use_gaus
-        assert loss_gaus == 0
+        loss_gaus = kld_for_unit_gaussian(*Q_gaus, do_sum=False)            #D1
+        full_mask = self.expand_mask(Q_cat)                                 #D1
+        loss_gaus = (loss_gaus * full_mask).sum() if self.use_gaus else 0   #D1
         return (loss_gaus + loss_cat) / Q_gaus[0].size(0) 
 
     def get_loss_x(self, P, x):
@@ -225,7 +231,8 @@ class WTACoder(PSequential):
         else:
             cat_mask = Variable(plain_max(P_cat.data))
         full_mask = self.expand_mask(cat_mask)
-        if self.use_gaus:
+        #if self.use_gaus: # FIXME, D2
+        if int(os.getenv('use_gaussian_sample')):
             std = var.sqrt()
             noise = Variable(std.data.new().resize_as_(std.data).normal_())
             gaus = mean + (noise * std)
