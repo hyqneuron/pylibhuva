@@ -188,7 +188,7 @@ class WTACoder(PSequential):
         assert num_latent >= num_continuous
         self.stochastic = stochastic
         self.mean_normalizer= mean_normalizer
-        self.mult = 1
+        self.mult = mult
         self.use_gaus = use_gaus
         # FIXME debugging
         assert self.num_latent==self.num_wta==256
