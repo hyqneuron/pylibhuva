@@ -258,8 +258,8 @@ class WTACoder(PSequential):
         return full_mask
 
     def __repr__(self):
-        return super(WTACoder, self).__repr__('(stochastic={}, num_wta={}, num_continuous={})'.format(
-                                            self.stochastic, self.num_wta, self.num_continuous))
+        return super(WTACoder, self).__repr__('(stochastic={}, num_wta={}, num_continuous={}, mult={})'.format(
+                                            self.stochastic, self.num_wta, self.num_continuous, self.mult))
 
 class FWTACoder(PSequential):
 
