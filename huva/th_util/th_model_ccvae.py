@@ -209,7 +209,7 @@ class WTACoder(PSequential):
         if int(os.getenv('learn_mult')):
             P_cat = F.softmax(self.logit_mult(logit))
         else:
-            P_cat = F.softmax((logit*self.mult) # F.softmax covers both 2D and 4D # D3, D7
+            P_cat = F.softmax((logit*self.mult)) # F.softmax covers both 2D and 4D # D3, D7
         # P_cat = F.softmax(logit / var ) # divide by variance # D4
         """ adaptive mean """
         #self.cat_mean = mean.mean(0)
