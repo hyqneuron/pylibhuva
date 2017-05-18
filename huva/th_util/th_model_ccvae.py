@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 from .th_model import *
+from .th_math import *
+from .th_functions import FuncSTCategorical, FuncOneHotSTCategorical
 
 """
 prototype:
@@ -165,8 +167,91 @@ class GaussianCoder(nn.Sequential):
         noise = Variable(std.data.new().resize_as_(std.data).normal_())
         return mean + noise * std
 
-
 class WTACoder(PSequential):
+    def __init__(self, num_latent, layers, 
+            mean_normalizer=None, stochastic=True, num_continuous=0, bypass_mode='BNM', mult=1, use_gaus=True):
+        """
+        bypass_mode:
+            'BNM': use output of mean-bn-mult, bypass nothing
+            'BN':  use output of mean-bn,      bypass mult
+            'ST':  use output of mean,         bypass bn and mult
+        """
+        super(WTACoder, self).__init__(*layers)
+        self.layers = layers
+        self.num_latent     = num_latent
+        self.num_continuous = num_continuous
+        self.num_wta        = num_latent - num_continuous
+        self.bypass_mode = bypass_mode
+        assert bypass_mode in ['BNM', 'ST'] # doesn't support BN yet
+        assert num_latent >= num_continuous
+        self.stochastic = stochastic
+        self.mean_normalizer= mean_normalizer
+        self.mult = 1
+        self.use_gaus = use_gaus
+        # FIXME debugging
+        assert self.num_latent==self.num_wta==256
+        assert self.num_continuous == 0
+
+    def forward(self, x):
+        inp = x
+        for layer in self.layers:
+            inp = layer(inp)
+        mean, logvar = split_gaussian(inp, self.num_latent)
+        cat_input = mean[:, :self.num_wta]
+        logit = self.mean_normalizer(cat_input.contiguous())
+        mean = mean.clone()
+        mean[:, :self.num_wta] = logit
+        P_cat = F.softmax(logit) # F.softmax covers both 2D and 4D
+        return (mean, logvar, logvar.exp(), P_cat)
+
+    def get_loss_z(self, Q, P=None):
+        Q_gaus, Q_cat = Q[:-1], Q[-1]
+        assert P is None
+        loss_cat  = kld_for_uniform_categorical(Q_cat)
+        loss_gaus = kld_for_unit_gaussian(*Q_gaus, do_sum=False)
+        full_mask = self.expand_mask(Q_cat)
+        loss_gaus = (loss_gaus * full_mask).sum() if self.use_gaus else 0
+        assert not self.use_gaus
+        assert loss_gaus == 0
+        return (loss_gaus + loss_cat) / Q_gaus[0].size(0) 
+
+    def get_loss_x(self, P, x):
+        raise NotImplementedError, '{} does not support decoding x'.format(self.__class__)
+
+    def sample(self, P):
+        mean, logvar, var, P_cat = P
+        if self.stochastic:
+            cat_mask = Variable(multinomial_max(P_cat.data)) # gumbel_max doesn't work with P
+        else:
+            cat_mask = Variable(plain_max(P_cat.data))
+        full_mask = self.expand_mask(cat_mask)
+        if self.use_gaus:
+            std = var.sqrt()
+            noise = Variable(std.data.new().resize_as_(std.data).normal_())
+            gaus = mean + (noise * std)
+        else:
+            gaus = mean
+        return gaus  * full_mask.float()
+
+    def expand_mask(self, wta_mask):
+        # expand the categorical mask to cover the continuous components with 1 to simplify computation
+        full_size = list(wta_mask.size())
+        assert self.num_continuous==0 # FIXME debugging
+        full_size[1] += self.num_continuous
+        if self.num_wta < self.num_latent: # has continuous components
+            assert False # FIXME debugging
+            full_mask = Variable(wta_mask.data.new().resize_(*full_size))
+            full_mask[:, :self.num_wta] = wta_mask # would the gradient be regisered???
+            full_mask[:, self.num_wta:] = 1 # do not mask over continuous components
+        else:
+            full_mask = wta_mask
+        return full_mask
+
+    def __repr__(self):
+        return super(WTACoder, self).__repr__('(stochastic={}, num_wta={}, num_continuous={})'.format(
+                                            self.stochastic, self.num_wta, self.num_continuous))
+
+class FWTACoder(PSequential):
 
     def __init__(self, num_latent, layers, 
             mean_normalizer=None, stochastic=True, num_continuous=0, bypass_mode='BNM', mult=1, use_gaus=True):
@@ -188,6 +273,9 @@ class WTACoder(PSequential):
         self.mean_normalizer= mean_normalizer
         self.mult = 1
         self.use_gaus = use_gaus
+        # FIXME debugging
+        assert self.num_latent==self.num_wta==256
+        assert self.num_continuous == 0
 
     def forward(self, x):
         inp = x
@@ -197,6 +285,8 @@ class WTACoder(PSequential):
         cat_input = mean[:, :self.num_wta]
         if self.mean_normalizer is not None:
             logit = self.mean_normalizer(cat_input.contiguous())
+            # FIXME remove this assert
+            assert self.bypass_mode=='BNM'
             if self.bypass_mode=='BNM':
                 mean = mean.clone()
                 mean[:, :self.num_wta] = logit
@@ -240,8 +330,10 @@ class WTACoder(PSequential):
     def expand_mask(self, wta_mask):
         # expand the categorical mask to cover the continuous components with 1 to simplify computation
         full_size = list(wta_mask.size())
+        assert self.num_continuous==0 # FIXME debugging
         full_size[1] += self.num_continuous
         if self.num_wta < self.num_latent: # has continuous components
+            assert False # FIXME debugging
             full_mask = Variable(wta_mask.data.new().resize_(*full_size))
             full_mask[:, :self.num_wta] = wta_mask # would the gradient be regisered???
             full_mask[:, self.num_wta:] = 1 # do not mask over continuous components
@@ -294,7 +386,7 @@ class MSEDecoder(nn.Sequential):
 class FakeCoder(PSequential):
     """ For debugging WTACoder """
 
-    def __init__(self, layers, stochastic=True, KLD=True, forward_sample=False, use_variance=False, beta=0.9):
+    def __init__(self, layers, stochastic=True, KLD=True, forward_sample=False, use_variance=False, beta=0.9, debug=False):
         super(FakeCoder, self).__init__(*layers)
         self.stochastic=stochastic
         self.KLD = KLD
@@ -302,33 +394,62 @@ class FakeCoder(PSequential):
         self.use_variance = use_variance
         #assert not (use_variance and not stochastic), 'variance can only be estimated in stochastic mode'
         self.beta = beta
+        self.debug = debug
+        if debug:
+            self.layers = layers
+            self.num_latent = 256
+            self.num_wta    = 256
+            self.num_continuous = 0
+            self.mean_normalizer = nn.Sequential(nn.BatchNorm1d(256, affine=False))
+            assert self.num_latent==self.num_wta==256
 
     def forward(self, x):
-        linear = nn.Sequential.forward(self, x)
-        resp = None
-        if self.forward_sample:
-            return self.sample((linear, resp))
-        return linear, resp
+        if not self.debug:
+            linear = nn.Sequential.forward(self, x)
+            resp = None
+            if self.forward_sample:
+                return self.sample((linear, resp))
+            return linear, resp
+        else:
+            num_latent=256
+            inp = x
+            for layer in self.layers:
+                inp = layer(inp)
+            mean, logvar = split_gaussian(inp, num_latent)
+            cat_input = mean[:, :self.num_wta]
+            if self.mean_normalizer is not None:
+                logit = self.mean_normalizer(cat_input.contiguous())
+                mean = mean.clone()
+                mean[:, :self.num_wta] = logit
+            P_cat = F.softmax(logit)
+            return mean, P_cat
 
     def get_loss_z(self, Q, P=None):
-        if self.KLD:
-            assert P==None
-            linear, resp = Q
-            Q_cat = resp if resp is not None else F.softmax(linear)
-            loss_cat  = kld_for_uniform_categorical(Q_cat)
-            return loss_cat / linear.size(0) 
+        if not self.debug:
+            if self.KLD:
+                assert P==None
+                linear, resp = Q
+                Q_cat = resp if resp is not None else F.softmax(linear)
+                loss_cat  = kld_for_uniform_categorical(Q_cat)
+                return loss_cat / linear.size(0) 
+            else:
+                return Variable(Q[0].data.new().resize_(1).fill_(0)) # no loss, that's why it's fake
         else:
-            return Variable(Q[0].data.new().resize_(1).fill_(0)) # no loss, that's why it's fake
+            Q_mean, Q_cat = Q
+            loss_cat = kld_for_uniform_categorical(Q_cat)
+            return loss_cat / Q_mean.size(0)
 
     def get_loss_x(self, P, x):
         raise NotImplementedError
 
     def sample(self, P):
         linear, resp = P
+        data = resp.data if resp is not None else linear.data
         if self.stochastic:
-            mask = Variable(multinomial_max(resp.data if resp is not None else linear.data))
+            mask = Variable(multinomial_max(data))
         else:
-            mask = Variable(plain_max(resp.data if resp is not None else linear.data))
+            mask = Variable(plain_max(data))
+        """
         if self.use_variance: # self.use_variance
             # if variance buffer doesn't exist, create it first
             if not hasattr(self, 'buffer_mean'):
@@ -361,10 +482,69 @@ class FakeCoder(PSequential):
                 self.p1 += (1-self.beta)*(mask).mean(0).data
                 self.buffer_mean = self.m1 / self.p1
                 self.buffer_var  = self.v1 / self.p1
+        """
+        if self.debug:
+            full_mask = self.expand_mask(mask)
+            return linear * full_mask
         return linear * mask.float()
+
+    # FIXME debugging
+    def expand_mask(self, wta_mask):
+        # expand the categorical mask to cover the continuous components with 1 to simplify computation
+        full_size = list(wta_mask.size())
+        assert self.num_continuous==0 # FIXME debugging
+        full_size[1] += self.num_continuous
+        if self.num_wta < self.num_latent: # has continuous components
+            assert False # FIXME debugging
+            full_mask = Variable(wta_mask.data.new().resize_(*full_size))
+            full_mask[:, :self.num_wta] = wta_mask # would the gradient be regisered???
+            full_mask[:, self.num_wta:] = 1 # do not mask over continuous components
+        else:
+            full_mask = wta_mask
+        return full_mask
 
     def __repr__(self):
         return super(FakeCoder, self).__repr__(
             '(stochastic={}, KLD={}, forward_sample={}, use_variance={}, beta={})'.format(
                 self.stochastic, self.KLD, self.forward_sample, self.use_variance, self.beta)
         )
+
+
+class STCategory(torch.nn.Module):
+    """ straight-through categorical """
+
+    def __init__(self, stochastic=True, forget_mask=False):
+        super(STCategory, self).__init__()
+        self.stochastic  = stochastic
+        self.forget_mask = forget_mask
+
+    def forward(self, x):
+        """
+        if self.stochastic:
+            mask = Variable(gumbel_max(x.data)) # gumbel_max must use logit
+        else:
+            mask = Variable(plain_max(x.data)) # plain_max accepts either logit or probability
+        return x * mask.float()
+        """
+
+        if self.stochastic:
+            mask = Variable(gumbel_max(x.data))
+        else:
+            mask = Variable(plain_max(x.data))
+        return FuncSTCategorical(self.stochastic, self.forget_mask)(x, mask)
+
+    def __repr__(self):
+        return "{}(stochastic={}, forget_mask={})".format(self.__class__.__name__, self.stochastic, self.forget_mask)
+
+
+class OneHotSTCategory(torch.nn.Module):
+
+    def __init__(self, stochastic=False, forget_mask=False):
+        super(OneHotSTCategory, self).__init__()
+        self.stochastic  = stochastic
+        self.forget_mask = forget_mask
+
+    def forward(self, x):
+        return FuncOneHotSTCategorical(self.stochastic, self.forget_mask)(x)
+
+
