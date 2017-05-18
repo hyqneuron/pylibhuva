@@ -193,7 +193,8 @@ class WTACoder(PSequential):
         # FIXME debugging
         assert self.num_latent==self.num_wta==256
         assert self.num_continuous == 0
-        #self.logit_mult = MultScalar(10, learnable=True) # D7
+        if int(os.getenv('learn_mult')):
+            self.logit_mult = MultScalar(self.mult, learnable=True) # D7
 
     def forward(self, x):
         inp = x
@@ -205,8 +206,10 @@ class WTACoder(PSequential):
         logit = self.mean_normalizer(cat_input.contiguous())
         mean = mean.clone()
         mean[:, :self.num_wta] = logit
-        mult = int(os.getenv('logit_mult'))
-        P_cat = F.softmax(logit*mult) # F.softmax covers both 2D and 4D # D3, D7
+        if int(os.getenv('learn_mult')):
+            P_cat = F.softmax(self.logit_mult(logit))
+        else:
+            P_cat = F.softmax((logit*self.mult) # F.softmax covers both 2D and 4D # D3, D7
         # P_cat = F.softmax(logit / var ) # divide by variance # D4
         """ adaptive mean """
         #self.cat_mean = mean.mean(0)
