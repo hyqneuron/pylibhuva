@@ -204,7 +204,6 @@ class WTACoder(PSequential):
         cat_input = mean[:, :self.num_wta]
         logit = self.mean_normalizer(cat_input.contiguous())
         mean = mean.clone()
-        #logit = self.logit_mult(logit)
         mean[:, :self.num_wta] = logit
         mult = int(os.getenv('logit_mult'))
         P_cat = F.softmax(logit*mult) # F.softmax covers both 2D and 4D # D3, D7
