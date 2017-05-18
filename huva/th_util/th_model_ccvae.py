@@ -206,7 +206,8 @@ class WTACoder(PSequential):
         mean = mean.clone()
         #logit = self.logit_mult(logit)
         mean[:, :self.num_wta] = logit
-        P_cat = F.softmax(logit*10) # F.softmax covers both 2D and 4D # D3, D7
+        mult = int(os.getenv('logit_mult'))
+        P_cat = F.softmax(logit*mult) # F.softmax covers both 2D and 4D # D3, D7
         # P_cat = F.softmax(logit / var ) # divide by variance # D4
         """ adaptive mean """
         #self.cat_mean = mean.mean(0)
