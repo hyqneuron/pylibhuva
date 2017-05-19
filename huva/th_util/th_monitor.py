@@ -1,4 +1,5 @@
 import torch
+from torch.optim.optimizer import required
 import math
 
 """
@@ -162,8 +163,6 @@ class MonitoredNorms(object):
         self.d_norm = None
         self.u_norm = None
 
-from torch.optim.optimizer import required
-
 
 class MonitoredSGD(torch.optim.SGD):
     """
@@ -257,6 +256,68 @@ class MonitoredSGD(torch.optim.SGD):
 
         """ norm of total update """
         self.update_norm = math.sqrt(self.update_sqr+1e-8)
+        return loss
+
+
+class MonitoredAdagrad(torch.optim.Adagrad):
+
+    def step(self, closure=None, update_monitor=False):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        if update_monitor:
+            self.update_sqr = 0
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+                state = self.state[p]
+
+                state['step'] += 1
+
+                if group['weight_decay'] != 0:
+                    if p.grad.data.is_sparse:
+                        raise RuntimeError("weight_decay option is not compatible with sparse gradients ")
+                    grad = grad.add(group['weight_decay'], p.data)
+
+                clr = group['lr'] / (1 + (state['step'] - 1) * group['lr_decay'])
+
+                if p.grad.data.is_sparse:
+                    grad_indices = grad.indices()
+                    grad_values = grad.values()
+                    size = torch.Size([x for x in grad.size()])
+
+                    def make_sparse(values):
+                        constructor = type(p.grad.data)
+                        if grad_indices.dim() == 0 or values.dim() == 0:
+                            return constructor()
+                        return constructor(grad_indices, values, size)
+                    state['sum'].add_(make_sparse(grad_values.pow(2)))
+                    std = state['sum'].sparse_mask(grad)
+                    std_values = std.values().sqrt_().add_(1e-10)
+                    p.data.add_(-clr, make_sparse(grad_values / std_values))
+                    if update_monitor:
+                        assert False, 'currently does not support sparse tensor Adagrad under monitor mode'
+                else:
+                    state['sum'].addcmul_(1, grad, grad)
+                    std = state['sum'].sqrt().add_(1e-10)
+                    p.data.addcdiv_(-clr, grad, std)
+
+                    if update_monitor:
+                        self.update_sqr += (clr * grad.div(std).norm()) **2
+
+        if update_monitor:
+            self.update_norm = math.sqrt(self.update_sqr+1e-8)
+
         return loss
 
 
