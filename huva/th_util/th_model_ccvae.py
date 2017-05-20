@@ -171,7 +171,8 @@ class GaussianCoder(nn.Sequential):
 
 class WTACoder(PSequential):
     def __init__(self, num_latent, layers, 
-            mean_normalizer=None, stochastic=True, num_continuous=0, bypass_mode='BNM', mult=1, use_gaus=True):
+            mean_normalizer=None, 
+            stochastic=True, gumbel=False, num_continuous=0, bypass_mode='BNM', mult=1, mult_learn=False, use_gaus=True):
         """
         bypass_mode:
             'BNM': use output of mean-bn-mult, bypass nothing
@@ -187,14 +188,18 @@ class WTACoder(PSequential):
         assert bypass_mode in ['BNM', 'ST'] # doesn't support BN yet
         assert num_latent >= num_continuous
         self.stochastic = stochastic
+        self.gumbel = gumbel
+        if gumbel:
+            assert not stochastic
         self.mean_normalizer= mean_normalizer
         self.mult = mult
+        self.mult_learn = mult_learn
+        if mult_learn:
+            self.logit_mult = MultScalar(self.mult, learnable=True) # D7
         self.use_gaus = use_gaus
         # FIXME debugging
         assert self.num_latent==self.num_wta==256
         assert self.num_continuous == 0
-        if int(os.getenv('learn_mult')):
-            self.logit_mult = MultScalar(self.mult, learnable=True) # D7
 
     def forward(self, x):
         inp = x
@@ -206,7 +211,7 @@ class WTACoder(PSequential):
         logit = self.mean_normalizer(cat_input.contiguous())
         mean = mean.clone()
         mean[:, :self.num_wta] = logit
-        if int(os.getenv('learn_mult')):
+        if self.mult_learn:
             P_cat = F.softmax(self.logit_mult(logit))
         else:
             P_cat = F.softmax((logit*self.mult)) # F.softmax covers both 2D and 4D # D3, D7
@@ -218,10 +223,13 @@ class WTACoder(PSequential):
     def get_loss_z(self, Q, P=None):
         Q_gaus, Q_cat = Q[:-1], Q[-1]
         assert P is None
-        loss_cat  = kld_for_uniform_categorical(Q_cat)
-        loss_gaus = kld_for_unit_gaussian(*Q_gaus, do_sum=False)            #D1
-        full_mask = self.expand_mask(Q_cat)                                 #D1
-        loss_gaus = (loss_gaus * full_mask).sum() if self.use_gaus else 0   #D1
+        if self.use_gaus:
+            loss_cat  = kld_for_uniform_categorical(Q_cat)
+            loss_gaus = kld_for_unit_gaussian(*Q_gaus, do_sum=False)            #D1
+            full_mask = self.expand_mask(Q_cat)                                 #D1
+            loss_gaus = (loss_gaus * full_mask).sum()                           #D1
+        else:
+            loss_gaus = 0
         return (loss_gaus + loss_cat) / Q_gaus[0].size(0) 
 
     def get_loss_x(self, P, x):
@@ -230,12 +238,15 @@ class WTACoder(PSequential):
     def sample(self, P):
         mean, logvar, var, P_cat = P
         if self.stochastic:
-            cat_mask = Variable(multinomial_max(P_cat.data)) # gumbel_max doesn't work with P
+            cat_mask = Variable(multinomial_max(P_cat.data))        # multinomial_max works with P
+        elif self.gumbel:
+            cat_mask = Variable(gumbel_softmax(P_cat.data.log()))   # gumbel_softmax requires logp
         else:
             cat_mask = Variable(plain_max(P_cat.data))
+        self.cat_mask = cat_mask
         full_mask = self.expand_mask(cat_mask)
-        #if self.use_gaus: # FIXME, D2
-        if int(os.getenv('use_gaussian_sample')):
+        if self.use_gaus: # FIXME, D2
+        # if int(os.getenv('use_gaussian_sample')):
             std = var.sqrt()
             noise = Variable(std.data.new().resize_as_(std.data).normal_())
             gaus = mean + (noise * std)
@@ -396,7 +407,8 @@ class MSEDecoder(nn.Sequential):
 class FakeCoder(PSequential):
     """ For debugging WTACoder """
 
-    def __init__(self, layers, stochastic=True, KLD=True, forward_sample=False, use_variance=False, beta=0.9, debug=False):
+    def __init__(self, layers, 
+            stochastic=True, KLD=True, forward_sample=False, use_variance=False, beta=0.9, debug=False):
         super(FakeCoder, self).__init__(*layers)
         self.stochastic=stochastic
         self.KLD = KLD

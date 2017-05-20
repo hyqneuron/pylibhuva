@@ -30,13 +30,13 @@ def modify_max(func_max):
     this is a wrapper for the max functions below
     It allows *_max to expand the size of the input along dimension 1
     """
-    def max_wrapper(x, additional_channels=0, add_val=None):
+    def max_wrapper(x, additional_channels=0, add_val=None, T=1):
         assert torch.is_tensor(x)
         if additional_channels > 0:
             expanded = new_add_channels(x, 1, additional_channels, add_val=add_val)
-            return func_max(x, expanded[:, :x.size(1)])
+            return func_max(x, expanded[:, :x.size(1)], T=T)
         else:
-            return func_max(x, x.new().resize_as_(x))
+            return func_max(x, x.new().resize_as_(x), T=T)
     return max_wrapper
 
 
@@ -50,27 +50,34 @@ def gumbel_noise(x, eps=1e-10):
 
 
 @modify_max
-def gumbel_max(x, out):
+def gumbel_max(x, out, T=None):
     """ x: logit, or output of log_softmax """
     noisy_x = x + gumbel_noise(x)
     max_x = noisy_x.max(1)[0].expand_as(x)
-    return torch.eq(max_x, noisy_x, out=out)
+    return torch.eq(max_x, noisy_x, out=out).float()
 
 
 @modify_max
-def multinomial_max(p, out):
+def gumbel_softmax(x, out, T=1):
+    noisy_x = (x + gumbel_noise(x)) / (T+1e-8)
+    softmax_x = F.softmax(noisy_x)
+    return softmax_x # return the thing without making it one-hot
+
+
+@modify_max
+def multinomial_max(p, out, T=None):
     """ x: probability for categories """
     out.zero_()
     labels  = p.multinomial(1)
     out.scatter_(1, labels, 1)
-    return out
+    return out.float()
 
 
 @modify_max
-def plain_max(x, out):
+def plain_max(x, out, T=None):
     """ x: both p and logit would work, since we're just taking max """
     max_x = x.max(1)[0].expand_as(x)
-    return torch.eq(max_x, x, out=out)
+    return torch.eq(max_x, x, out=out).float()
 
 
 def kld_for_gaussians((mean1, logvar1, var1), (mean2, logvar2, var2), do_sum=True):
