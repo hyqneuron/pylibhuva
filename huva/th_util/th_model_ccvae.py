@@ -172,7 +172,8 @@ class GaussianCoder(nn.Sequential):
 class WTACoder(PSequential):
     def __init__(self, num_latent, layers, 
             mean_normalizer=None, 
-            stochastic=True, gumbel=False, num_continuous=0, bypass_mode='BNM', mult=1, mult_learn=False, use_gaus=True):
+            stochastic=True, gumbel=False, gumbel_decay=1, gumbel_step=999999999,
+            num_continuous=0, bypass_mode='BNM', mult=1, mult_learn=False, use_gaus=True):
         """
         bypass_mode:
             'BNM': use output of mean-bn-mult, bypass nothing
@@ -189,8 +190,13 @@ class WTACoder(PSequential):
         assert num_latent >= num_continuous
         self.stochastic = stochastic
         self.gumbel = gumbel
+        self.gumbel_decay = gumbel_decay
+        self.gumbel_step  = gumbel_step
         if gumbel:
             assert not stochastic
+            self.steps_taken = 0
+        else:
+            assert gumbel_decay == 1
         self.mean_normalizer= mean_normalizer
         self.mult = mult
         self.mult_learn = mult_learn
@@ -218,6 +224,9 @@ class WTACoder(PSequential):
         # P_cat = F.softmax(logit / var ) # divide by variance # D4
         """ adaptive mean """
         #self.cat_mean = mean.mean(0)
+        """ record gumbel steps """
+        if self.gumbel:
+            self.steps_taken += 1
         return (mean, logvar, var, P_cat)
 
     def get_loss_z(self, Q, P=None):
@@ -240,7 +249,8 @@ class WTACoder(PSequential):
         if self.stochastic:
             cat_mask = Variable(multinomial_max(P_cat.data))        # multinomial_max works with P
         elif self.gumbel:
-            cat_mask = Variable(gumbel_softmax(P_cat.data.log()))   # gumbel_softmax requires logp
+            T = self.gumbel_decay ** int(self.steps_taken / self.gumbel_step)
+            cat_mask = Variable(gumbel_softmax(P_cat.data.log(), T=T))   # gumbel_softmax requires logp
         else:
             cat_mask = Variable(plain_max(P_cat.data))
         self.cat_mask = cat_mask
