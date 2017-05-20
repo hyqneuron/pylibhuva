@@ -60,7 +60,7 @@ def gumbel_max(x, out, T=None):
 @modify_max
 def gumbel_softmax(x, out, T=1):
     noisy_x = (x + gumbel_noise(x)) / (T+1e-8)
-    softmax_x = F.softmax(noisy_x)
+    softmax_x = F.softmax(Variable(noisy_x)).data
     return softmax_x # return the thing without making it one-hot
 
 

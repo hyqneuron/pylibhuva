@@ -223,8 +223,8 @@ class WTACoder(PSequential):
     def get_loss_z(self, Q, P=None):
         Q_gaus, Q_cat = Q[:-1], Q[-1]
         assert P is None
+        loss_cat  = kld_for_uniform_categorical(Q_cat)
         if self.use_gaus:
-            loss_cat  = kld_for_uniform_categorical(Q_cat)
             loss_gaus = kld_for_unit_gaussian(*Q_gaus, do_sum=False)            #D1
             full_mask = self.expand_mask(Q_cat)                                 #D1
             loss_gaus = (loss_gaus * full_mask).sum()                           #D1
