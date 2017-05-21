@@ -123,7 +123,7 @@ class MultScalar(torch.nn.Module):
 
     def forward(self, x):
         if self.learnable:
-            return x * self.weight.expand_as(x)
+            return x * self.weight
         else:
             if self.mult == 1:
                 return x
@@ -132,6 +132,29 @@ class MultScalar(torch.nn.Module):
 
     def __repr__(self):
         return "{}(scalar={}, learnable={})".format(self.__class__.__name__, self.mult, self.learnable)
+
+
+class DivideScalar(torch.nn.Module):
+
+    def __init__(self, divisor=1, learnable=True):
+        super(MultScalar, self).__init__()
+        self.divisor = divisor
+        self.learnable = learnable
+        if learnable:
+            weight = Parameter(torch.Tensor(1).fill_(divisor))
+            self.weight = weight
+
+    def forward(self, x):
+        if self.learnable:
+            return x / self.weight
+        else:
+            if self.divisor == 1:
+                return x
+            else:
+                return x / self.divisor
+
+    def __repr__(self):
+        return "{}(scalar={}, learnable={})".format(self.__class__.__name__, self.divisor, self.learnable)
 
 
 class SplitTake(torch.nn.Module):
