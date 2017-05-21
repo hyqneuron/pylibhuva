@@ -136,6 +136,7 @@ class hVAEStage(nn.Module):
 
 
 def split_gaussian(mean_logvar, num_latent):
+    assert mean_logvar.size(1) == num_latent * 2
     mean   = mean_logvar[:, :num_latent]
     logvar = mean_logvar[:, num_latent:]
     return mean, logvar
@@ -170,10 +171,12 @@ class GaussianCoder(nn.Sequential):
 
 
 class WTACoder(PSequential):
-    def __init__(self, num_latent, layers, 
-            mean_normalizer=None, 
-            stochastic=True, gumbel=False, gumbel_decay=1, gumbel_step=999999999,
-            num_continuous=0, bypass_mode='BNM', mult=1, mult_learn=False, use_gaus=True):
+    def __init__(self, 
+            layers, mean_normalizer,
+            num_latent, num_continuous=0,
+            persample_kld=False, stochastic=True, gumbel=False, gumbel_decay=1, gumbel_step=999999999,
+            bypass_mode='BN', mult=1, mult_learn=False, 
+            use_gaus=True):
         """
         bypass_mode:
             'BNM': use output of mean-bn-mult, bypass nothing
@@ -181,49 +184,54 @@ class WTACoder(PSequential):
             'ST':  use output of mean,         bypass bn and mult
         """
         super(WTACoder, self).__init__(*layers)
+        """ modules """
         self.layers = layers
-        self.num_latent     = num_latent
-        self.num_continuous = num_continuous
-        self.num_wta        = num_latent - num_continuous
-        self.bypass_mode = bypass_mode
-        assert bypass_mode in ['BNM', 'ST'] # doesn't support BN yet
+        self.mean_normalizer = mean_normalizer
+        """ sizes """
+        self.num_latent      = num_latent
+        self.num_continuous  = num_continuous
+        self.num_wta         = num_latent - num_continuous
         assert num_latent >= num_continuous
-        self.stochastic = stochastic
-        self.gumbel = gumbel
-        self.gumbel_decay = gumbel_decay
-        self.gumbel_step  = gumbel_step
+        """ sampling mode """
+        self.persample_kld = persample_kld
+        self.stochastic    = stochastic
+        self.gumbel        = gumbel
+        self.gumbel_decay  = gumbel_decay
+        self.gumbel_step   = gumbel_step
         if gumbel:
             assert not stochastic
             self.steps_taken = 0
         else:
             assert gumbel_decay == 1
-        self.mean_normalizer= mean_normalizer
+        """ bypassing and multiplier """
+        assert bypass_mode in ['BNM', 'BN', 'ST']
+        self.bypass_mode = bypass_mode
         self.mult = mult
         self.mult_learn = mult_learn
         if mult_learn:
-            self.logit_mult = MultScalar(self.mult, learnable=True) # D7
+            self.bn_mult = MultScalar(self.mult, learnable=True) # D7
+        """ whether to include gaussian KLD """
         self.use_gaus = use_gaus
-        # FIXME debugging
-        assert self.num_latent==self.num_wta==256
-        assert self.num_continuous == 0
 
     def forward(self, x):
+        """ forward propagate and split mean from logvar """
         inp = x
         for layer in self.layers:
             inp = layer(inp)
         mean, logvar = split_gaussian(inp, self.num_latent)
         var = logvar.exp() # D5 * 0.1
-        cat_input = mean[:, :self.num_wta]
-        logit = self.mean_normalizer(cat_input.contiguous())
-        mean = mean.clone()
-        mean[:, :self.num_wta] = logit
-        if self.mult_learn:
-            P_cat = F.softmax(self.logit_mult(logit))
+        """ extract categorical components """
+        ST  = mean[:, :self.num_wta]                    # ST
+        BN  = self.mean_normalizer(ST.contiguous())     # BN
+        if self.mult_learn:                             # BNM
+            BNM = self.bn_mult(BN)
         else:
-            P_cat = F.softmax((logit*self.mult)) # F.softmax covers both 2D and 4D # D3, D7
-        # P_cat = F.softmax(logit / var ) # divide by variance # D4
-        """ adaptive mean """
-        #self.cat_mean = mean.mean(0)
+            BNM = self.mult * BN
+        P_cat = F.softmax(BNM)
+        """ choose which categorical mean to output """
+        if self.bypass_mode != 'ST':
+            mean = mean.clone()
+            mean[:, :self.num_wta] = BN if self.bypass_mode == 'BN' else BNM
         """ record gumbel steps """
         if self.gumbel:
             self.steps_taken += 1
@@ -231,11 +239,16 @@ class WTACoder(PSequential):
 
     def get_loss_z(self, Q, P=None):
         Q_gaus, Q_cat = Q[:-1], Q[-1]
-        assert P is None
-        loss_cat  = kld_for_uniform_categorical(Q_cat)
+        """ 
+        handle persample_kld
+        - categorical KLD normalized with cat_mask instead of Q_cat: sample_mask          * log(q/p) 
+        - gaussian    KLD normalized with cat_mask instead of Q_cat: expanded_sample_mask * kld(q||p)
+        """
+        sample_mask   = self.cat_mask if self.persample_kld else Q_cat
+        loss_cat = kld_for_uniform_categorical(Q_cat, sample_mask=sample_mask)
         if self.use_gaus:
             loss_gaus = kld_for_unit_gaussian(*Q_gaus, do_sum=False)            #D1
-            full_mask = self.expand_mask(Q_cat)                                 #D1
+            full_mask = self.expand_mask(sample_mask)                           #D1
             loss_gaus = (loss_gaus * full_mask).sum()                           #D1
         else:
             loss_gaus = 0
@@ -246,41 +259,56 @@ class WTACoder(PSequential):
 
     def sample(self, P):
         mean, logvar, var, P_cat = P
+        """ sample a categorical mask """
         if self.stochastic:
-            cat_mask = Variable(multinomial_max(P_cat.data))        # multinomial_max works with P
+            cat_mask = Variable(multinomial_max (P_cat.data))               # multinomial_max works with p
         elif self.gumbel:
             T = self.gumbel_decay ** int(self.steps_taken / self.gumbel_step)
-            cat_mask = Variable(gumbel_softmax(P_cat.data.log(), T=T))   # gumbel_softmax requires logp
+            cat_mask = Variable(gumbel_softmax  (P_cat.data.log(), T=T))    # gumbel_softmax requires logp
         else:
-            cat_mask = Variable(plain_max(P_cat.data))
+            cat_mask = Variable(plain_max       (P_cat.data))               # plain_max works with both logp and p
         self.cat_mask = cat_mask
-        full_mask = self.expand_mask(cat_mask)
-        if self.use_gaus: # FIXME, D2
-        # if int(os.getenv('use_gaussian_sample')):
-            std = var.sqrt()
-            noise = Variable(std.data.new().resize_as_(std.data).normal_())
-            gaus = mean + (noise * std)
+        """ take gaussian sample """
+        if self.use_gaus: 
+            std    = var.sqrt()
+            noise  = Variable(std.data.new().resize_as_(std.data).normal_())
+            smooth = mean + (noise * std)
         else:
-            gaus = mean
-        return gaus  * full_mask.float()
+            smooth = mean
+        """ expand categorical mask from NxC to full mask Nx(C+S) """
+        full_mask = self.expand_mask(cat_mask)
+        """ 
+        STS: Smooth times stochastic 
+        full_mask[:, :self.num_wta] is (almost) one-hot (when gumbel_softmax isn't used)
+        full_mask[:, self.num_wta:] == 1, dummy values so that we can perform a single multiplication
+        Alternative:
+            sts_cat     = smooth[:, :self.num_wta] * cat_mask
+            smooth_cont = smooth[:, self.num_wta:]
+            return torch.cat([sts_cat, smooth_cont], 1)
+        """
+        return smooth * full_mask.float()
 
-    def expand_mask(self, wta_mask):
+    def expand_mask(self, cat_mask):
         # expand the categorical mask to cover the continuous components with 1 to simplify computation
-        full_size = list(wta_mask.size())
-        assert self.num_continuous==0 # FIXME debugging
+        full_size = list(cat_mask.size())
         full_size[1] += self.num_continuous
         if self.num_wta < self.num_latent: # has continuous components
             assert False # FIXME debugging
-            full_mask = Variable(wta_mask.data.new().resize_(*full_size))
-            full_mask[:, :self.num_wta] = wta_mask # would the gradient be regisered???
-            full_mask[:, self.num_wta:] = 1 # do not mask over continuous components
+            full_mask = Variable(cat_mask.data.new().resize_(*full_size))
+            full_mask[:, :self.num_wta] = cat_mask  # gradient not needed
+            full_mask[:, self.num_wta:] = 1         # simply copy continous components
         else:
-            full_mask = wta_mask
+            full_mask = cat_mask
         return full_mask
 
     def __repr__(self):
-        return super(WTACoder, self).__repr__('(stochastic={}, num_wta={}, num_continuous={}, mult={})'.format(
-                                            self.stochastic, self.num_wta, self.num_continuous, self.mult))
+        extra_str = "(num_wta={}, num_continuous={}, persample_kld={}, stochastic={}, gumbel={}, gumbel_decay={}, gumbel_step={}, "
+        extra_str += "bypass_mode={}, mult={}, mult_learn={}, use_gaus={})"
+        extra_str = extra_str.format(
+                self.num_wta, self.num_continuous, self.persample_kld, self.stochastic, self.gumbel, self.gumbel_decay, self.gumbel_step,
+                self.bypass_mode, self.mult, self.mult_learn, self.use_gaus
+                )
+        return super(WTACoder, self).__repr__(extra_str)
 
 class FWTACoder(PSequential):
 

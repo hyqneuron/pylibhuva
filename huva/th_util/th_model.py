@@ -96,7 +96,7 @@ class SpaceToChannel(StridingTransform):
                 .view(N, Cs, Hs, Ws)
 
 
-class ChannelToSpace(torch.nn.Module):
+class ChannelToSpace(StridingTransform):
 
     def forward(self, x):
         assert x.dim() == 4 

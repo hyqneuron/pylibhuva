@@ -1,3 +1,4 @@
+from th_base import *
 from th_data import *       # datasets
 from th_math import *       # max, kld and stuff
 from th_model import *      # custom modules
