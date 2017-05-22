@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
+from .th_base import *
 from .th_model import *
 from .th_math import *
 from .th_functions import FuncSTCategorical, FuncOneHotSTCategorical
@@ -185,7 +186,7 @@ class WTACoder(PSequential):
         """
         super(WTACoder, self).__init__(*layers)
         """ modules """
-        self.layers = layers
+        self.layers          = layers
         self.mean_normalizer = mean_normalizer
         """ sizes """
         self.num_latent      = num_latent
@@ -193,11 +194,11 @@ class WTACoder(PSequential):
         self.num_wta         = num_latent - num_continuous
         assert num_latent >= num_continuous
         """ sampling mode """
-        self.persample_kld = persample_kld
-        self.stochastic    = stochastic
-        self.gumbel        = gumbel
-        self.gumbel_decay  = gumbel_decay
-        self.gumbel_step   = gumbel_step
+        self.persample_kld = persample_kld      # per-sample KLD provides high-variance KLD gradient estimate
+        self.stochastic    = stochastic         # stochastic sampling, can be disabled for debugging
+        self.gumbel        = gumbel             # gumbel_softmax sampling reduces variance for both KLD and logP
+        self.gumbel_decay  = gumbel_decay       # gumbel softmax annealing
+        self.gumbel_step   = gumbel_step        # gunbel softmax annealing
         if gumbel:
             assert not stochastic
             self.steps_taken = 0
@@ -245,8 +246,8 @@ class WTACoder(PSequential):
         if self.bypass_mode != 'ST':
             mean = mean.clone()
             mean[:, :self.num_wta] = BN if self.bypass_mode == 'BN' else BNM
-        """ record gumbel steps """
-        if self.gumbel:
+        """ increment gumbel steps, this is likely the most sensible place to record number of iterations """
+        if self.training and self.gumbel:
             self.steps_taken += 1
         return (mean, logvar, var, P_cat)
 
@@ -258,11 +259,43 @@ class WTACoder(PSequential):
         - gaussian    KLD normalized with cat_mask instead of Q_cat: expanded_sample_mask * kld(q||p)
         """
         sample_mask   = self.cat_mask if self.persample_kld else Q_cat
-        loss_cat = kld_for_uniform_categorical(Q_cat, sample_mask=sample_mask)
+
+        if P is None:
+            P_cat = Variable(new_as(Q_cat.data).fill_(1/self.num_wta))
+            if self.use_gaus:
+                # adaptive mean
+                q_mean, q_logvar, q_var = Q_gaus
+                wta_mean = q_mean[:, :self.num_wta]
+                current_adaptive_mean = (wta_mean * sample_cat).sum(1).mean().data[0]
+                if not hasattr(self, 'adaptive_mean'):
+                    self.adaptive_mean = 0
+                self.adaptive_mean = 0.95 * self.adaptive_mean + 0.05 * current_adaptive_mean
+                # fill up P_gaus and P_cat
+                p_mean = Varialbe(new_as(q_mean.data))
+                p_mean[:, :self.num_wta].fill(self.adaptive_mean) # WTA
+                p_mean[:, self.num_wta:].fill(0)                  # continuous components
+                p_logvar = Varialbe(new_as(q_mean).fill_(0))      # prior unit variance
+                p_var    = Variable(new_as(q_mean).fill_(1))      # prior unit variance
+                P_gaus   = (p_mean, p_logvar, p_var)
+        else:
+            P_gaus, P_cat = P[:-1], P[-1]
+        """
+        if P is None:
+            loss_cat = kld_for_uniform_categorical(Q_cat, sample_mask=sample_mask)
+            if self.use_gaus:
+                loss_gaus = kld_for_unit_gaussian(*Q_gaus, do_sum=False)            #D1
+                full_mask = self.expand_mask(sample_mask)                           #D1
+                loss_gaus = (loss_gaus * full_mask).sum()                           #D1
+            else:
+                loss_gaus = 0
+        else:
+            P_gaus, P_cat = P[:-1], P[-1]
+        """
+        loss_cat = kld_for_categoricals(Q_cat, P_cat, sample_mask=sample_mask)
         if self.use_gaus:
-            loss_gaus = kld_for_unit_gaussian(*Q_gaus, do_sum=False)            #D1
-            full_mask = self.expand_mask(sample_mask)                           #D1
-            loss_gaus = (loss_gaus * full_mask).sum()                           #D1
+            loss_gaus = kld_for_gaussians(Q_gaus, P_gaus, do_sum=False)
+            full_mask = self.expand_mask(sample_mask)
+            loss_gaus = (loss_gaus * full_mask).sum()
         else:
             loss_gaus = 0
         return (loss_gaus + loss_cat) / Q_gaus[0].size(0) 
@@ -276,7 +309,7 @@ class WTACoder(PSequential):
         if self.stochastic:
             cat_mask = Variable(multinomial_max (P_cat.data))               # multinomial_max works with p
         elif self.gumbel:
-            T = self.gumbel_decay ** int(self.steps_taken / self.gumbel_step)
+            T = 0 if not self.training else self.gumbel_decay ** int(self.steps_taken / self.gumbel_step)
             cat_mask = Variable(gumbel_softmax  (P_cat.data.log(), T=T))    # gumbel_softmax requires logp
         else:
             cat_mask = Variable(plain_max       (P_cat.data))               # plain_max works with both logp and p
