@@ -111,50 +111,42 @@ class ChannelToSpace(StridingTransform):
                 .view(N, C, H, W)
 
 
-class MultScalar(torch.nn.Module):
-
-    def __init__(self, mult=1, learnable=True):
-        super(MultScalar, self).__init__()
-        self.mult = mult
-        self.learnable = learnable
+class ScalarOp(torch.nn.Module):
+    def __init__(self, init_val=1, learnable=True, apply_exp=False):
+        super(ScalarOp, self).__init__()
+        self.init_val = init_val
+        self.learnable= learnable
+        self.apply_exp = apply_exp
+        if apply_exp: 
+            assert learnable, 'Only learnable scalar ops support apply_exp=True'
         if learnable:
-            weight = Parameter(torch.Tensor(1).fill_(mult))
+            weight = Parameter(torch.Tensor(1).fill_(init_val))
             self.weight = weight
 
-    def forward(self, x):
-        if self.learnable:
-            return x * self.weight
-        else:
-            if self.mult == 1:
-                return x
-            else:
-                return x * self.mult
+    def get_scalar(self, expand_as=None):
+        if not self.learnable:
+            return self.init_val
+        scalar = self.weight.exp() if self.apply_exp else self.weight
+        if expand_as is not None:
+            scalar = scalar.expand_as(expand_as)
+        return scalar
 
     def __repr__(self):
-        return "{}(scalar={}, learnable={})".format(self.__class__.__name__, self.mult, self.learnable)
+        return "{}(init_val={}, learnable={}, apply_exp={})".format(self.__class__.__name__, self.init_val, self.learnable, self.apply_exp)
 
 
-class DivideScalar(torch.nn.Module):
-
-    def __init__(self, divisor=1, learnable=True):
-        super(MultScalar, self).__init__()
-        self.divisor = divisor
-        self.learnable = learnable
-        if learnable:
-            weight = Parameter(torch.Tensor(1).fill_(divisor))
-            self.weight = weight
+class MultScalar(ScalarOp):
 
     def forward(self, x):
-        if self.learnable:
-            return x / self.weight
-        else:
-            if self.divisor == 1:
-                return x
-            else:
-                return x / self.divisor
+        expand_as = None if not self.learnable else x
+        return x * self.get_scalar(expand_as=expand_as)
 
-    def __repr__(self):
-        return "{}(scalar={}, learnable={})".format(self.__class__.__name__, self.divisor, self.learnable)
+
+class DivideScalar(ScalarOp):
+
+    def forward(self, x):
+        expand_as = None if not self.learnable else x
+        return x / self.get_scalar(expand_as=expand_as)
 
 
 class SplitTake(torch.nn.Module):
@@ -183,7 +175,6 @@ def init_weights(module):
     """
     Initialize Conv2d, Linear and BatchNorm2d
     """
-
     for m in module.modules():
         if isinstance(m, torch.nn.Conv2d):
             """

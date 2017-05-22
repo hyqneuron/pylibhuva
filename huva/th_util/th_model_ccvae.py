@@ -175,7 +175,7 @@ class WTACoder(PSequential):
             layers, mean_normalizer,
             num_latent, num_continuous=0,
             persample_kld=False, stochastic=True, gumbel=False, gumbel_decay=1, gumbel_step=999999999,
-            bypass_mode='BN', mult=1, mult_learn=False, 
+            bypass_mode='BN', mult=1, mult_learn=False, mult_mode="multiply", 
             use_gaus=True):
         """
         bypass_mode:
@@ -209,7 +209,20 @@ class WTACoder(PSequential):
         self.mult = mult
         self.mult_learn = mult_learn
         if mult_learn:
-            self.bn_mult = MultScalar(self.mult, learnable=True) # D7
+            assert mult_mode in ['multiply', 'divide', 'multiply_exp', 'divide_exp']
+            self.mult_mode = mult_mode
+            if mult_mode == 'multiply':
+                self.bn_mult = MultScalar  (           self.mult,  learnable=True, apply_exp=False)
+            elif mult_mode == 'multiply_exp':
+                self.bn_mult = MultScalar  (math.log(  self.mult), learnable=True, apply_exp=True)
+            elif mult_mode == 'divide':
+                self.bn_mult = DivideScalar(         1/self.mult,  learnable=True, apply_exp=False)
+            elif mult_mode == 'divide_exp':
+                self.bn_mult = DivideScalar(math.log(1/self.mult), learnable=True, apply_exp=True)
+            else:
+                assert False, 'WTF? mult_mode={}'.format(mult_mode)
+        else:
+            assert mult_mode=='multiply', 'When multiplier is not learnable, mult_mode must be "multiply"'
         """ whether to include gaussian KLD """
         self.use_gaus = use_gaus
 
@@ -358,12 +371,9 @@ class FWTACoder(PSequential):
             loss_cat  = kld_for_uniform_categorical(Q_cat)
             loss_gaus = kld_for_unit_gaussian(*Q_gaus, do_sum=False)
         else:
-            assert False
-            """
             P_gaus, P_cat = P[:-1], P[-1]
             loss_cat  = kld_for_categoricals(Q_cat, P_cat)
             loss_gaus = kld_for_gaussians(Q_gaus, P_gaus, do_sum=False)
-            """
         full_mask = self.expand_mask(Q_cat)
         loss_gaus = (loss_gaus * full_mask).sum() if self.use_gaus else 0
         return (loss_gaus + loss_cat) / Q_gaus[0].size(0) 
