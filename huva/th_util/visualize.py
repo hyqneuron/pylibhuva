@@ -1,7 +1,7 @@
 import torch
 import math
-from th_nn_stats import *
-from th_image import tile_images, save_image, enlarge_image_pixel
+from .nn_stats import *
+from .image import tile_images, save_image, enlarge_image_pixel
 import os
 
 """

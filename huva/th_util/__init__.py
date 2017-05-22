@@ -1,15 +1,15 @@
-from th_base import *
-from th_data import *       # datasets
-from th_math import *       # max, kld and stuff
-from th_model import *      # custom modules
-from th_model_ccvae import *# ccvae modules
-from th_training import *   # training utilities
+from .base import *
+from .data import *       # datasets
+from .math import *       # max, kld and stuff
+from .model import *      # custom modules
+from .model_ccvae import *# ccvae modules
+from .training import *   # training utilities
 
-from th_monitor import *    # monitor gradient descent
-from th_nn_stats import *   # nn statistics
-from th_visualize import *  # guided backpropagation visualization
+from .monitor import *    # monitor gradient descent
+from .nn_stats import *   # nn statistics
+from .visualize import *  # guided backpropagation visualization
 
-from tests import *
+from .tests import *
 
 from .. import LogPrinter
 

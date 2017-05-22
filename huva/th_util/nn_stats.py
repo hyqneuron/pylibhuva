@@ -1,6 +1,6 @@
 import torch
 from torch.autograd import Variable
-from th_image import tile_images, save_image, enlarge_image_pixel
+from .image import tile_images, save_image, enlarge_image_pixel
 import math
 import matplotlib
 matplotlib.use('Agg')
