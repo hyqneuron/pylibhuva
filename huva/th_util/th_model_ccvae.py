@@ -175,7 +175,7 @@ class WTACoder(PSequential):
             layers, mean_normalizer,
             num_latent, num_continuous=0,
             persample_kld=False, stochastic=True, gumbel=False, gumbel_decay=1, gumbel_step=999999999,
-            bypass_mode='BN', mult=1, mult_learn=False, mult_mode="multiply", mult_intern=1.0, 
+            bypass_mode='BN', mult=1, mult_learn=False, mult_mode="multiply",
             use_gaus=True):
         """
         bypass_mode:
@@ -208,24 +208,20 @@ class WTACoder(PSequential):
         self.bypass_mode = bypass_mode
         self.mult = mult
         self.mult_learn = mult_learn
-        self.mult_intern = mult_intern
-        mult_extern = float(mult) / mult_intern
-        self.mult_extern = mult_extern
         if mult_learn:
             assert mult_mode in ['multiply', 'divide', 'multiply_exp', 'divide_exp']
             self.mult_mode = mult_mode
             if mult_mode == 'multiply':
-                self.bn_mult = MultScalar  (             mult_extern,  learnable=True, apply_exp=False)
+                self.bn_mult = MultScalar  (             self.mult,  learnable=True, apply_exp=False)
             elif mult_mode == 'multiply_exp':
-                self.bn_mult = MultScalar  (math.log(    mult_extern), learnable=True, apply_exp=True)
+                self.bn_mult = MultScalar  (math.log(    self.mult), learnable=True, apply_exp=True)
             elif mult_mode == 'divide':
-                self.bn_mult = DivideScalar(         1.0/mult_extern,  learnable=True, apply_exp=False)
+                self.bn_mult = DivideScalar(         1.0/self.mult,  learnable=True, apply_exp=False)
             elif mult_mode == 'divide_exp':
-                self.bn_mult = DivideScalar(math.log(1.0/mult_extern), learnable=True, apply_exp=True)
+                self.bn_mult = DivideScalar(math.log(1.0/self.mult), learnable=True, apply_exp=True)
             else:
                 assert False, 'WTF? mult_mode={}'.format(mult_mode)
         else:
-            assert mult_intern==1
             assert mult_mode=='multiply', 'When multiplier is not learnable, mult_mode must be "multiply"'
         """ whether to include gaussian KLD """
         self.use_gaus = use_gaus
@@ -241,7 +237,7 @@ class WTACoder(PSequential):
         ST  = mean[:, :self.num_wta]                    # ST
         BN  = self.mean_normalizer(ST.contiguous())     # BN
         if self.mult_learn:                             # BNM
-            BNM = self.bn_mult(BN) * self.mult_intern
+            BNM = self.bn_mult(BN)
         else:
             BNM = self.mult * BN
         P_cat = F.softmax(BNM)
