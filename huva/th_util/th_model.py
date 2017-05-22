@@ -138,15 +138,13 @@ class ScalarOp(torch.nn.Module):
 class MultScalar(ScalarOp):
 
     def forward(self, x):
-        expand_as = None if not self.learnable else x
-        return x * self.get_scalar(expand_as=expand_as)
+        return x * self.get_scalar(expand_as=x)
 
 
 class DivideScalar(ScalarOp):
 
     def forward(self, x):
-        expand_as = None if not self.learnable else x
-        return x / self.get_scalar(expand_as=expand_as)
+        return x / self.get_scalar(expand_as=x)
 
 
 class SplitTake(torch.nn.Module):
