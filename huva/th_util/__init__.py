@@ -1,6 +1,6 @@
 from .base import *
 from .data import *       # datasets
-from .math import *       # max, kld and stuff
+from .math_ops import *       # max, kld and stuff
 from .model import *      # custom modules
 from .model_ccvae import *# ccvae modules
 from .training import *   # training utilities

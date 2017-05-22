@@ -2,10 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from .th_base import *
-from .th_model import *
-from .th_math import *
-from .th_functions import FuncSTCategorical, FuncOneHotSTCategorical
+from .base import *
+from .model import *
+from .math_ops import *
+from .functions import FuncSTCategorical, FuncOneHotSTCategorical
 import os # for debugging with os.getenv
 
 """
@@ -261,21 +261,27 @@ class WTACoder(PSequential):
         sample_mask   = self.cat_mask if self.persample_kld else Q_cat
 
         if P is None:
-            P_cat = Variable(new_as(Q_cat.data).fill_(1/self.num_wta))
+            P_cat = Variable(new_as(Q_cat.data).fill_(1.0/self.num_wta))
             if self.use_gaus:
-                # adaptive mean
+                # compute current mean and var
                 q_mean, q_logvar, q_var = Q_gaus
                 wta_mean = q_mean[:, :self.num_wta]
-                current_adaptive_mean = (wta_mean * sample_cat).sum(1).mean().data[0]
+                current_vals = (wta_mean * sample_mask).sum(1)
+                current_adaptive_mean = current_vals.mean().data[0]
+                current_adaptive_var  = current_vals.var().data[0]
+                # update adaptive mean and var
                 if not hasattr(self, 'adaptive_mean'):
                     self.adaptive_mean = 0
+                    self.adaptive_var  = 1
                 self.adaptive_mean = 0.95 * self.adaptive_mean + 0.05 * current_adaptive_mean
+                self.adaptive_var  = 0.95 * self.adaptive_var  + 0.05 * current_adaptive_var
                 # fill up P_gaus and P_cat
-                p_mean = Varialbe(new_as(q_mean.data))
-                p_mean[:, :self.num_wta].fill(self.adaptive_mean) # WTA
-                p_mean[:, self.num_wta:].fill(0)                  # continuous components
-                p_logvar = Varialbe(new_as(q_mean).fill_(0))      # prior unit variance
-                p_var    = Variable(new_as(q_mean).fill_(1))      # prior unit variance
+                p_mean = Variable(new_as(q_mean.data))
+                p_mean.data[:, :self.num_wta] = self.adaptive_mean # WTA
+                if self.num_continuous > 0:
+                    p_mean.data[:, self.num_wta:] = 0              # continuous components
+                p_logvar = Variable(new_as(q_mean.data).fill_(math.log(self.adaptive_var+1e-10)))      # prior unit variance
+                p_var    = Variable(new_as(q_mean.data).fill_(         self.adaptive_var ))      # prior unit variance
                 P_gaus   = (p_mean, p_logvar, p_var)
         else:
             P_gaus, P_cat = P[:-1], P[-1]

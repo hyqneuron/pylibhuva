@@ -1,6 +1,6 @@
 import torch
 from torch.autograd import Function
-from huva.th_util.th_math import gumbel_max, multinomial_max, plain_max
+from huva.th_util.math_ops import gumbel_max, multinomial_max, plain_max
 
 
 class FuncSTCategorical(Function):

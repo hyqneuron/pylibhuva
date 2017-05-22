@@ -1,4 +1,4 @@
-from .th_model import *
+from .model import *
 from torch.autograd import Variable
 import torch.nn.functional as F
 import math
