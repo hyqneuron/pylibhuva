@@ -175,7 +175,8 @@ class WTACoder(PSequential):
     def __init__(self, 
             layers, mean_normalizer,
             num_latent, num_continuous=0,
-            persample_kld=False, stochastic=True, gumbel=False, gumbel_init=1, gumbel_decay=1, gumbel_step=999999999,
+            persample_kld=False, stochastic=True, 
+            gumbel=False, gumbel_init=1, gumbel_decay=1, gumbel_step=999999999,
             bypass_mode='BN', mult=1, mult_learn=False, mult_mode="multiply",
             use_gaus=True):
         """
