@@ -175,7 +175,7 @@ class WTACoder(PSequential):
     def __init__(self, 
             layers, mean_normalizer,
             num_latent, num_continuous=0,
-            persample_kld=False, stochastic=True, gumbel=False, gumbel_decay=1, gumbel_step=999999999,
+            persample_kld=False, stochastic=True, gumbel=False, gumbel_init=1, gumbel_decay=1, gumbel_step=999999999,
             bypass_mode='BN', mult=1, mult_learn=False, mult_mode="multiply",
             use_gaus=True):
         """
@@ -197,6 +197,7 @@ class WTACoder(PSequential):
         self.persample_kld = persample_kld      # per-sample KLD provides high-variance KLD gradient estimate
         self.stochastic    = stochastic         # stochastic sampling, can be disabled for debugging
         self.gumbel        = gumbel             # gumbel_softmax sampling reduces variance for both KLD and logP
+        self.gumbel_init   = gumbel_init        # initial temperature
         self.gumbel_decay  = gumbel_decay       # gumbel softmax annealing
         self.gumbel_step   = gumbel_step        # gunbel softmax annealing
         if gumbel:
@@ -315,7 +316,7 @@ class WTACoder(PSequential):
         if self.stochastic:
             cat_mask = Variable(gumbel_max      (P_cat.data.log()))         # gumbel_max works with logp, more flexible than multinomial_max
         elif self.gumbel:
-            T = 0 if not self.training else self.gumbel_decay ** int(self.steps_taken / self.gumbel_step)
+            T = 0 if not self.training else self.gumbel_init * self.gumbel_decay ** int(self.steps_taken / self.gumbel_step)
             cat_mask = Variable(gumbel_softmax  (P_cat.data.log(), T=T))    # gumbel_softmax requires logp
         else:
             cat_mask = Variable(plain_max       (P_cat.data))               # plain_max works with both logp and p
