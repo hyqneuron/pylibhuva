@@ -313,7 +313,7 @@ class WTACoder(PSequential):
         mean, logvar, var, P_cat = P
         """ sample a categorical mask """
         if self.stochastic:
-            cat_mask = Variable(multinomial_max (P_cat.data))               # multinomial_max works with p
+            cat_mask = Variable(gumbel_max      (P_cat.data.log()))         # gumbel_max works with logp, more flexible than multinomial_max
         elif self.gumbel:
             T = 0 if not self.training else self.gumbel_decay ** int(self.steps_taken / self.gumbel_step)
             cat_mask = Variable(gumbel_softmax  (P_cat.data.log(), T=T))    # gumbel_softmax requires logp

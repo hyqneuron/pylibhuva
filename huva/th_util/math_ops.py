@@ -82,7 +82,7 @@ def gumbel_softmax(x, out, T=1):
 def multinomial_max(p, out, T=None):
     """ x: probability for categories """
     out.zero_()
-    labels  = p.multinomial(1)
+    labels  = p.view(p.size(0), -1).multinomial(1).view(p.size())
     out.scatter_(1, labels, 1)
     return out.float()
 

@@ -147,6 +147,37 @@ class DivideScalar(ScalarOp):
         return x / self.get_scalar(expand_as=x)
 
 
+class TensorOp(torch.nn.Module):
+
+    def __init__(self, init_val, learnable=True, apply_exp=False):
+        super(TensorOp, self).__init__()
+        self.init_val = init_val
+        self.learnable = learnable
+        self.apply_exp = apply_exp
+        if apply_exp:
+            assert learnable, 'Only learnable tensor ops support apply_exp=True'
+        if learnable:
+            weight = Parameter(init_val.clone())
+            self.weight = weight
+
+    def get_tensor(self, expand_as=None):
+        result = self.init_val
+        if self.learnable:
+            result = self.weight
+        if expand_as is not None:
+            result = result.expand_as(expand_as)
+        return result
+
+    def __repr__(self):
+        return "{}(size={})".format(self.__class__.__name__, list(self.init_val.size()))
+
+
+class AddTensor(TensorOp):
+
+    def forward(self, x):
+        return x + self.get_tensor(expand_as=x)
+
+
 class SplitTake(torch.nn.Module):
 
     def __init__(self, split_position):
