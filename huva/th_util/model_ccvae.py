@@ -96,11 +96,13 @@ class hVAE(nn.Sequential): # inherits nn.Sequential for its nice printing (__rep
         loss_z = 0
         for i, lower in enumerate(self.stages):
             higher = self.stages[i+1] if i+1 < len(self.stages) else None
-            loss_zs.append(lower.get_loss_z(lower.Q, higher.P if higher else None))
-            loss_z += loss_zs[-1]
+            layer_lossz = lower.get_loss_z(lower.Q, higher.P if higher else None)
+            loss_zs.append(layer_lossz)
+            loss_z += layer_lossz
         lowest = self.stages[0]
         loss_x = lowest.get_loss_x(lowest.P, self.x)
-        return loss_z + loss_x, loss_z, loss_x, loss_zs
+        loss_sum = loss_z + loss_x
+        return loss_sum, loss_z, loss_x, loss_zs
 
     def sample_p(self, z, sample_x=False):
         for i, stage in enumerate(reversed(self.stages)):
@@ -175,6 +177,7 @@ class WTACoder(PSequential):
     def __init__(self, 
             layers, mean_normalizer,
             num_latent, num_continuous=0,
+            output_nonlinear=False,
             persample_kld=False, stochastic=True, 
             gumbel=False, gumbel_init=1, gumbel_decay=1, gumbel_step=999999999,
             bypass_mode='BN', mult=1, mult_learn=False, mult_mode="multiply",
@@ -194,6 +197,8 @@ class WTACoder(PSequential):
         self.num_continuous  = num_continuous
         self.num_wta         = num_latent - num_continuous
         assert num_latent >= num_continuous
+        """ upward passing output """
+        self.output_nonlinear = output_nonlinear
         """ sampling mode """
         self.persample_kld = persample_kld      # per-sample KLD provides high-variance KLD gradient estimate
         self.stochastic    = stochastic         # stochastic sampling, can be disabled for debugging
@@ -244,17 +249,23 @@ class WTACoder(PSequential):
         else:
             BNM = self.mult * BN
         P_cat = F.softmax(BNM)
-        """ choose which categorical mean to output """
+        """ choose which categorical mean to output as mean"""
         if self.bypass_mode != 'ST':
             mean = mean.clone()
             mean[:, :self.num_wta] = BN if self.bypass_mode == 'BN' else BNM
+        """ upward output """
+        if self.output_nonlinear:
+            upward_output = mean.clone()
+            upward_output[:, :self.num_wta] = mean[:, :self.num_wta] * P_cat
+        else:
+            upward_output = mean
         """ increment gumbel steps, this is likely the most sensible place to record number of iterations """
         if self.training and self.gumbel:
             self.steps_taken += 1
-        return (mean, logvar, var, P_cat)
+        return (upward_output, mean, logvar, var, P_cat)
 
     def get_loss_z(self, Q, P=None):
-        Q_gaus, Q_cat = Q[:-1], Q[-1]
+        Q_gaus, Q_cat = Q[1:-1], Q[-1]
         """ 
         handle persample_kld
         - categorical KLD normalized with cat_mask instead of Q_cat: sample_mask          * log(q/p) 
@@ -262,6 +273,7 @@ class WTACoder(PSequential):
         """
         sample_mask   = self.cat_mask if self.persample_kld else Q_cat
 
+        """ fill up absent P for top-layer prior """
         if P is None:
             P_cat = Variable(new_as(Q_cat.data).fill_(1.0/self.num_wta))
             if self.use_gaus:
@@ -286,19 +298,8 @@ class WTACoder(PSequential):
                 p_var    = Variable(new_as(q_mean.data).fill_(         self.adaptive_var ))      # prior unit variance
                 P_gaus   = (p_mean, p_logvar, p_var)
         else:
-            P_gaus, P_cat = P[:-1], P[-1]
-        """
-        if P is None:
-            loss_cat = kld_for_uniform_categorical(Q_cat, sample_mask=sample_mask)
-            if self.use_gaus:
-                loss_gaus = kld_for_unit_gaussian(*Q_gaus, do_sum=False)            #D1
-                full_mask = self.expand_mask(sample_mask)                           #D1
-                loss_gaus = (loss_gaus * full_mask).sum()                           #D1
-            else:
-                loss_gaus = 0
-        else:
-            P_gaus, P_cat = P[:-1], P[-1]
-        """
+            P_gaus, P_cat = P[1:-1], P[-1]
+        """ compute loss """
         loss_cat = kld_for_categoricals(Q_cat, P_cat, sample_mask=sample_mask)
         if self.use_gaus:
             loss_gaus = kld_for_gaussians(Q_gaus, P_gaus, do_sum=False)
@@ -306,13 +307,20 @@ class WTACoder(PSequential):
             loss_gaus = (loss_gaus * full_mask).sum()
         else:
             loss_gaus = 0
-        return (loss_gaus + loss_cat) / Q_gaus[0].size(0) 
+        loss_gaus /= Q_gaus[0].size(0)
+        loss_cat  /= Q_gaus[0].size(0)
+        self.loss_gaus = loss_gaus
+        self.loss_cat  = loss_cat
+        return loss_gaus + loss_cat
+
+    def print_losses(self):
+        print(self.loss_cat, self.loss_gaus)
 
     def get_loss_x(self, P, x):
         raise NotImplementedError, '{} does not support decoding x'.format(self.__class__)
 
     def sample(self, P):
-        mean, logvar, var, P_cat = P
+        upward_output, mean, logvar, var, P_cat = P
         """ sample a categorical mask """
         if self.stochastic:
             cat_mask = Variable(gumbel_max      (P_cat.data.log()))         # gumbel_max works with logp, more flexible than multinomial_max
@@ -356,10 +364,10 @@ class WTACoder(PSequential):
         return full_mask
 
     def __repr__(self):
-        extra_str = "(num_wta={}, num_continuous={}, persample_kld={}, stochastic={}, gumbel={}, gumbel_decay={}, gumbel_step={}, "
+        extra_str = "(num_wta={}, num_continuous={}, output_nonlinear={}, persample_kld={}, stochastic={}, gumbel={}, gumbel_decay={}, gumbel_step={}, "
         extra_str += "bypass_mode={}, mult={}, mult_learn={}, use_gaus={})"
         extra_str = extra_str.format(
-                self.num_wta, self.num_continuous, self.persample_kld, self.stochastic, self.gumbel, self.gumbel_decay, self.gumbel_step,
+                self.num_wta, self.num_continuous, self.output_nonlinear, self.persample_kld, self.stochastic, self.gumbel, self.gumbel_decay, self.gumbel_step,
                 self.bypass_mode, self.mult, self.mult_learn, self.use_gaus
                 )
         return super(WTACoder, self).__repr__(extra_str)
