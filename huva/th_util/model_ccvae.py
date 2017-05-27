@@ -276,26 +276,30 @@ class WTACoder(PSequential):
         """ fill up absent P for top-layer prior """
         if P is None:
             P_cat = Variable(new_as(Q_cat.data).fill_(1.0/self.num_wta))
+            """ below is needed for sampling """
+            # compute current mean and var
+            q_mean, q_logvar, q_var = Q_gaus
+            wta_mean = q_mean[:, :self.num_wta]
+            current_vals = (wta_mean * sample_mask).sum(1)
+            current_adaptive_mean = current_vals.mean().data[0]
+            current_adaptive_var  = current_vals.var().data[0]
+            # update adaptive mean and var
+            if not hasattr(self, 'adaptive_mean'):
+                self.adaptive_mean = 0
+                self.adaptive_var  = 1
+            self.adaptive_mean = 0.95 * self.adaptive_mean + 0.05 * current_adaptive_mean
+            self.adaptive_var  = 0.95 * self.adaptive_var  + 0.05 * current_adaptive_var
             if self.use_gaus:
-                # compute current mean and var
-                q_mean, q_logvar, q_var = Q_gaus
-                wta_mean = q_mean[:, :self.num_wta]
-                current_vals = (wta_mean * sample_mask).sum(1)
-                current_adaptive_mean = current_vals.mean().data[0]
-                current_adaptive_var  = current_vals.var().data[0]
-                # update adaptive mean and var
-                if not hasattr(self, 'adaptive_mean'):
-                    self.adaptive_mean = 0
-                    self.adaptive_var  = 1
-                self.adaptive_mean = 0.95 * self.adaptive_mean + 0.05 * current_adaptive_mean
-                self.adaptive_var  = 0.95 * self.adaptive_var  + 0.05 * current_adaptive_var
                 # fill up P_gaus and P_cat
                 p_mean = Variable(new_as(q_mean.data))
                 p_mean.data[:, :self.num_wta] = self.adaptive_mean # WTA
-                if self.num_continuous > 0:
-                    p_mean.data[:, self.num_wta:] = 0              # continuous components
                 p_logvar = Variable(new_as(q_mean.data).fill_(math.log(self.adaptive_var+1e-10)))      # prior unit variance
                 p_var    = Variable(new_as(q_mean.data).fill_(         self.adaptive_var ))      # prior unit variance
+                # continuous components
+                if self.num_continuous > 0:
+                    p_mean  .data[:, self.num_wta:] = 0  # 0 mean
+                    p_logvar.data[:, self.num_wta:] = 0  # unit variance
+                    p_var   .data[:, self.num_wta:] = 1  # unit variance
                 P_gaus   = (p_mean, p_logvar, p_var)
         else:
             P_gaus, P_cat = P[1:-1], P[-1]
@@ -371,6 +375,20 @@ class WTACoder(PSequential):
                 self.bypass_mode, self.mult, self.mult_learn, self.use_gaus
                 )
         return super(WTACoder, self).__repr__(extra_str)
+
+    def extract_variance_stats(self):
+        """ for debugging variance statistics """
+        multiplier = self.bn_mult.weight.data[0] if self.mult_learn else self.mult
+        final_layer = self.layers[-1]
+        # extract only the logvar of wta components
+        nw = self.num_wta
+        nl = self.num_latent
+        logvar_weight  = final_layer.weight[nl:nl+nw]
+        logvar_bias    = final_layer.bias[nl:nl+nw] if hasattr(final_layer, 'bias') else 0
+        logvar_wvar  = (logvar_weight/nw).var().data[0]
+        logvar_bmean = logvar_bias.mean().data[0] if logvar_bias != 0 else 0 
+        return multiplier, logvar_wvar, logvar_bmean
+
 
 class FWTACoder(PSequential):
 

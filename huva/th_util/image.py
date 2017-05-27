@@ -1,6 +1,7 @@
 import cv2
 import torch
 from PIL import Image
+import os
 
 
 def th_get_jet(img, label):
@@ -65,11 +66,14 @@ def tile_images(imgs, rows, cols, padding=0):
     return tiled
 
 
-def save_image(img, filename):
+def save_image(img, filename, create_folder=False):
     img = img.cpu().float()
     img = img -  img.min()
     img = img / (img.max() + 1e-8)
     img = img.mul(255).byte().permute(1,2,0).squeeze()
+    folder = os.path.dirname(filename)
+    if not os.path.exists(folder) and create_folder:
+        os.mkdir(folder)
     Image.fromarray(img.numpy()).save(filename)
 
 
