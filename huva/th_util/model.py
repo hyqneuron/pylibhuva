@@ -20,9 +20,9 @@ def wn_decorate(forward, module, name, name_g, name_v, fix_norm):
     def decorated_forward(*args, **kwargs):
         g = module.__getattr__(name_g)
         v = module.__getattr__(name_v)
-        if fix_norm: # fix norm of v at 1 before actual propagation
-            v.data.div_(v.data.norm()) # bypass gradients
-            w = v * g.expand_as(v)
+        if fix_norm: # fix norm of v at 10 before actual propagation
+            v.data.div_(v.data.norm()*0.1) # bypass gradients
+            w = v * g.expand_as(v) * 0.1
         else:
             w = v*(g/torch.norm(v)).expand_as(v)
         module.__setattr__(name, w)
