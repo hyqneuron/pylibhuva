@@ -369,7 +369,7 @@ class MonitoredSpecificSGD(torch.optim.SGD):
                     norm.w_norm = p.data.norm()
                     norm.g_norm = p.grad.data.norm()
                     if momentum != 0:
-                        norm.mg_norm= self.state[p]['momentum_buffer'].norm()
+                        norm.mg_norm= self.state[p]['momentum_buffer'].norm() if 'momentum_buffer' in self.state[p] else 0
 
                 d_p = p.grad.data
                 p.grad_var = d_p.var()

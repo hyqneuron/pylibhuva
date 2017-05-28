@@ -1,12 +1,82 @@
 import torch
+import torch.nn as nn
 from torch.autograd import Variable, Function
 from torch.nn.parameter import Parameter
 import torch.nn.functional as F
 from collections import OrderedDict
 import math
+from functools import wraps
+
+"""
+Weight normalization
+Copied from https://gist.github.com/rtqichen/b22a9c6bfc4f36e605a7b3ac1ab4122f
+
+weight_norm: function to wrap a module, making it weight-normalized
+wn_decorate: modifies module's forward function to include a normalizatio step
+"""
+
+def wn_decorate(forward, module, name, name_g, name_v):
+    @wraps(forward)
+    def decorated_forward(*args, **kwargs):
+        g = module.__getattr__(name_g)
+        v = module.__getattr__(name_v)
+        w = v*(g/torch.norm(v)).expand_as(v)
+        module.__setattr__(name, w)
+        return forward(*args, **kwargs)
+    return decorated_forward
 
 
-class CachedSequential(torch.nn.Sequential):
+def weight_norm(module, name='weight'):
+    param = module.__getattr__(name)
+
+    # construct g,v such that w = g/||v|| * v
+    g = torch.norm(param)
+    v = param/g.expand_as(param)
+    g = Parameter(g.data)
+    v = Parameter(v.data)
+    name_g = name + '_g'
+    name_v = name + '_v'
+
+    # remove w from parameter list
+    del module._parameters[name]
+
+    # add g and v as new parameters
+    module.register_parameter(name_g, g)
+    module.register_parameter(name_v, v)
+
+    # construct w every time before forward is called
+    module.forward = wn_decorate(module.forward, module, name, name_g, name_v)
+    return module
+
+
+def weight_norm_ctor(mod_type):
+    def init_func(*args, **kwargs):
+        mod = mod_type(*args, **kwargs)
+        return weight_norm(mod)
+    return init_func
+
+
+class ConvTranspose2d(nn.ConvTranspose2d):
+    """
+    Fixes ConvTransposed2d's weight initialization.
+    Conv2d           input size is [in_channels, k,k], output size is [out_channels,1,1]
+    ConvTransposed2d input size is [out_channels,1,1], output size is [in_channels, k,k]
+    """
+
+    def reset_parameters(self):
+        n = self.in_channels
+        """
+        remove below, because input size is in_channels by 1x1, and output size is out_channels by kxk
+        """
+        # for k in self.kernel_size:
+        #     n *= k
+        stdv = 1. / math.sqrt(n)
+        self.weight.data.uniform_(-stdv, stdv)
+        if self.bias is not None:
+            self.bias.data.uniform_(-stdv, stdv)
+
+
+class CachedSequential(nn.Sequential):
     """
     Convenience container that caches the output of a specified set of layers for later use.
     """
@@ -26,19 +96,19 @@ class CachedSequential(torch.nn.Sequential):
         return input
 
 
-class PSequential(torch.nn.Sequential): # Pretty Sequential, allow __repr__ customization
+class PSequential(nn.Sequential): # Pretty Sequential, allow __repr__ customization
 
     def __repr__(self, additional=''):
         tmpstr = self.__class__.__name__ + ' ({},'.format(additional)+'\n'
         for key, module in self._modules.items():
             modstr = module.__repr__()
-            modstr = torch.nn.modules.module._addindent(modstr, 2)
+            modstr = nn.modules.module._addindent(modstr, 2)
             tmpstr = tmpstr + '  (' + key + '): ' + modstr + '\n'
         tmpstr = tmpstr + ')'
         return tmpstr
 
 
-class Flatten(torch.nn.Module):
+class Flatten(nn.Module):
     """
     Flatten the output from dim-1 and onwards
     """
@@ -53,13 +123,13 @@ class Flatten(torch.nn.Module):
         return "Flatten()"
 
 
-class View(torch.nn.Module):
+class View(nn.Module):
     """
     View output as a specific size
     """
 
     def __init__(self, *sizes):
-        torch.nn.Module.__init__(self)
+        nn.Module.__init__(self)
         self.sizes = sizes
 
     def forward(self, x):
@@ -69,10 +139,10 @@ class View(torch.nn.Module):
         return "View({})".format(str(self.sizes))
 
 
-class StridingTransform(torch.nn.Module):
+class StridingTransform(nn.Module):
 
     def __init__(self, stride):
-        torch.nn.Module.__init__(self)
+        nn.Module.__init__(self)
         self.stride = (stride, stride) if type(int(stride)) in [int, float] else stride
         assert all(map(lambda x:type(x)==int, self.stride))
 
@@ -111,7 +181,7 @@ class ChannelToSpace(StridingTransform):
                 .view(N, C, H, W)
 
 
-class ScalarOp(torch.nn.Module):
+class ScalarOp(nn.Module):
     def __init__(self, init_val=1, learnable=True, apply_exp=False):
         super(ScalarOp, self).__init__()
         self.init_val = init_val
@@ -147,7 +217,7 @@ class DivideScalar(ScalarOp):
         return x / self.get_scalar(expand_as=x)
 
 
-class TensorOp(torch.nn.Module):
+class TensorOp(nn.Module):
 
     def __init__(self, init_val, learnable=True, apply_exp=False):
         super(TensorOp, self).__init__()
@@ -178,20 +248,20 @@ class AddTensor(TensorOp):
         return x + self.get_tensor(expand_as=x)
 
 
-class SplitTake(torch.nn.Module):
+class SplitTake(nn.Module):
 
     def __init__(self, split_position):
-        torch.nn.Module.__init__(self)
+        nn.Module.__init__(self)
         self.split_position = split_position
 
     def forward(self, x):
         return x[:, :self.split_position].contiguous()
 
 
-class GaussianSplit(torch.nn.Module):
+class GaussianSplit(nn.Module):
 
     def __init__(self, split_position):
-        torch.nn.Module.__init__(self)
+        nn.Module.__init__(self)
         self.split_position = split_position
 
     def forward(self, x):
@@ -205,7 +275,7 @@ def init_weights(module):
     Initialize Conv2d, Linear and BatchNorm2d
     """
     for m in module.modules():
-        if isinstance(m, torch.nn.Conv2d):
+        if isinstance(m, nn.Conv2d):
             """
             Now that we can count on the variance of output units to be 1, or maybe 0.5 (due to ReLU), we have 
             Nin * var(w) = [1 or 2]
@@ -217,12 +287,12 @@ def init_weights(module):
             m.weight.data.normal_(0, std) 
             m.bias.data.zero_()
             print (n, m.weight.data.norm())
-        elif isinstance(m, torch.nn.Linear):
+        elif isinstance(m, nn.Linear):
             n = m.in_features # in_features
             std = math.sqrt(2.0 / n) # 2 accounts for ReLU's half-slashing
             m.weight.data.normal_(0, std)
             m.bias.data.zero_()
-        elif isinstance(m, torch.nn.BatchNorm2d):
+        elif isinstance(m, nn.BatchNorm2d):
             m.weight.data.fill_(1)
             m.bias.data.zero_()
 
@@ -244,7 +314,7 @@ def get_topographic_decay_multiplier(conv_layer, grid_size=3, mults=[1,2,4]):
     Topographically structured weight decay
     Compute a topographic_multiplier for conv_layer.weight
     """
-    assert isinstance(conv_layer, torch.nn.Conv2d)
+    assert isinstance(conv_layer, nn.Conv2d)
     CJ = conv_layer.in_channels
     CI = conv_layer.out_channels
     i_to_coord = compute_i_to_coord(CI, grid_size) # current layer
@@ -262,9 +332,9 @@ def get_topographic_decay_multiplier(conv_layer, grid_size=3, mults=[1,2,4]):
 
 
 def make_cnn_with_conf(model_conf, 
-            dropout=torch.nn.Dropout, 
-            activation=torch.nn.ReLU,
-            batchnorm=torch.nn.BatchNorm2d):
+            dropout=nn.Dropout, 
+            activation=nn.ReLU,
+            batchnorm=nn.BatchNorm2d):
     """
     Use a declarative cnn specification to create a model
 
@@ -306,31 +376,31 @@ def make_cnn_with_conf(model_conf,
             k,pad = (3,1) if name.startswith('conv') else (1,0)
             print('number of output channels: {}'.format(num_chan))
             sub_layers = [
-                torch.nn.Conv2d(in_channel, num_chan, kernel_size=k, padding=pad),
+                nn.Conv2d(in_channel, num_chan, kernel_size=k, padding=pad),
                 activation(inplace=True)
             ]
             if batchnorm is not None:
                 sub_layers.insert(1, batchnorm(num_chan))
             if drop_p is not None:
                 sub_layers += [dropout(p=drop_p)]
-            layers[name] = torch.nn.Sequential(*sub_layers)
+            layers[name] = nn.Sequential(*sub_layers)
             in_channel = num_chan
         elif name.startswith('pool'):
             k, s = info
-            layers[name] = torch.nn.MaxPool2d(kernel_size=k, stride=s)
+            layers[name] = nn.MaxPool2d(kernel_size=k, stride=s)
         elif name.startswith('drop'):
             _, drop_p = info
             layers[name] = dropout(p=drop_p)
         elif name.startswith('logit'):
             num_class, _ = info
-            layers[name] = torch.nn.Conv2d(in_channel, num_class, kernel_size=1, padding=0)
+            layers[name] = nn.Conv2d(in_channel, num_class, kernel_size=1, padding=0)
         elif name.startswith('flatter'):
             layers[name] = Flatten()
         elif name.startswith('softmax'):
-            layers[name] = torch.nn.Softmax()
+            layers[name] = nn.Softmax()
         else:
             assert False
-    model = torch.nn.Sequential(layers)
+    model = nn.Sequential(layers)
     model.model_conf = model_conf # capture the model_conf for serialization
     init_weights(model)
     return model
