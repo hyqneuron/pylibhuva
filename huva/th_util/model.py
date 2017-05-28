@@ -15,23 +15,27 @@ weight_norm: function to wrap a module, making it weight-normalized
 wn_decorate: modifies module's forward function to include a normalizatio step
 """
 
-def wn_decorate(forward, module, name, name_g, name_v):
+def wn_decorate(forward, module, name, name_g, name_v, fix_norm):
     @wraps(forward)
     def decorated_forward(*args, **kwargs):
         g = module.__getattr__(name_g)
         v = module.__getattr__(name_v)
-        w = v*(g/torch.norm(v)).expand_as(v)
+        if fix_norm: # fix norm of v at 1 before actual propagation
+            v.data.div_(v.data.norm()) # bypass gradients
+            w = g * v
+        else:
+            w = v*(g/torch.norm(v)).expand_as(v)
         module.__setattr__(name, w)
         return forward(*args, **kwargs)
     return decorated_forward
 
 
-def weight_norm(module, name='weight'):
+def weight_norm(module, name='weight', fix_norm=False):
     param = module.__getattr__(name)
 
     # construct g,v such that w = g/||v|| * v
     g = torch.norm(param)
-    v = param/g.expand_as(param)
+    v = param/g.expand_as(param) # v at this point has norm=1
     g = Parameter(g.data)
     v = Parameter(v.data)
     name_g = name + '_g'
@@ -45,14 +49,14 @@ def weight_norm(module, name='weight'):
     module.register_parameter(name_v, v)
 
     # construct w every time before forward is called
-    module.forward = wn_decorate(module.forward, module, name, name_g, name_v)
+    module.forward = wn_decorate(module.forward, module, name, name_g, name_v, fix_norm)
     return module
 
 
-def weight_norm_ctor(mod_type):
+def weight_norm_ctor(mod_type, name='weight', fix_norm=False):
     def init_func(*args, **kwargs):
         mod = mod_type(*args, **kwargs)
-        return weight_norm(mod)
+        return weight_norm(mod, name, fix_norm)
     return init_func
 
 
