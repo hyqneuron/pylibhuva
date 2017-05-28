@@ -56,7 +56,7 @@ def weight_norm(module, name='weight', fix_norm=False):
 def weight_norm_ctor(mod_type, name='weight', fix_norm=False):
     def init_func(*args, **kwargs):
         mod = mod_type(*args, **kwargs)
-        return weight_norm(mod, name, fix_norm)
+        return weight_norm(mod, name=name, fix_norm=fix_norm)
     return init_func
 
 
