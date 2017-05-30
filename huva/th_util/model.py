@@ -9,20 +9,28 @@ from functools import wraps
 
 """
 Weight normalization
-Copied from https://gist.github.com/rtqichen/b22a9c6bfc4f36e605a7b3ac1ab4122f
+Modified from https://gist.github.com/rtqichen/b22a9c6bfc4f36e605a7b3ac1ab4122f
 
-weight_norm: function to wrap a module, making it weight-normalized
-wn_decorate: modifies module's forward function to include a normalizatio step
+weight_norm: 
+    function to wrap a nn.Module instance, making it weight-normalized
+
+weight_norm_ctor: 
+    function to wrap a nn.Module class. Result can be called as a constructor. This constructor will produce
+    weight-normalized modules.
+
+wn_decorate: 
+    modifies module's forward function to include a normalizatio step
 """
 
-def wn_decorate(forward, module, name, name_g, name_v, fix_norm):
+def wn_decorate(forward, module, name, name_g, name_v, fixed_norm=None):
     @wraps(forward)
     def decorated_forward(*args, **kwargs):
         g = module.__getattr__(name_g)
         v = module.__getattr__(name_v)
-        if fix_norm: # fix norm of v at 10 before actual propagation
-            v.data.div_(v.data.norm()*0.1) # bypass gradients
-            w = v * g.expand_as(v) * 0.1
+        if fixed_norm is not None: # fix norm at a certain value
+            assert isinstance(fixed_norm, float), '{} is not float'.format(fixed_norm)
+            v.data.div_(v.data.norm()/fixed_norm) # bypass gradients
+            w = v * g.expand_as(v)
         else:
             w = v*(g/torch.norm(v)).expand_as(v)
         module.__setattr__(name, w)
@@ -30,12 +38,28 @@ def wn_decorate(forward, module, name, name_g, name_v, fix_norm):
     return decorated_forward
 
 
-def weight_norm(module, name='weight', fix_norm=False):
+def weight_norm(module, name='weight', fix_norm=False, init_prop=False):
     param = module.__getattr__(name)
 
     # construct g,v such that w = g/||v|| * v
     g = torch.norm(param)
-    v = param/g.expand_as(param) # v at this point has norm=1
+    if fix_norm:
+        """
+        Without init_prop, we fix norm at 10
+        With init_prop, we fix norm at initial norm
+        """
+        if init_prop:
+            v = param # v at this point has norm=original norm
+            fixed_norm=g.data[0]
+            g.data.fill_(1) # g start at 1
+        else:
+            v = param/g.expand_as(param) * 10.0 # v at this point has norm=10.0
+            fixed_norm=10.0
+            g.data.div_(10.0) # g start at 0.1 * original norm
+    else:
+        v = param/g.expand_as(param) # v at this point has norm=1
+        fixed_norm = None
+        # g start at original norm
     g = Parameter(g.data)
     v = Parameter(v.data)
     name_g = name + '_g'
@@ -49,14 +73,14 @@ def weight_norm(module, name='weight', fix_norm=False):
     module.register_parameter(name_v, v)
 
     # construct w every time before forward is called
-    module.forward = wn_decorate(module.forward, module, name, name_g, name_v, fix_norm)
+    module.forward = wn_decorate(module.forward, module, name, name_g, name_v, fixed_norm=fixed_norm)
     return module
 
 
-def weight_norm_ctor(mod_type, name='weight', fix_norm=False):
+def weight_norm_ctor(mod_type, name='weight', fix_norm=False, init_prop=False):
     def init_func(*args, **kwargs):
         mod = mod_type(*args, **kwargs)
-        return weight_norm(mod, name=name, fix_norm=fix_norm)
+        return weight_norm(mod, name=name, fix_norm=fix_norm, init_prop=init_prop)
     return init_func
 
 
@@ -110,6 +134,12 @@ class PSequential(nn.Sequential): # Pretty Sequential, allow __repr__ customizat
             tmpstr = tmpstr + '  (' + key + '): ' + modstr + '\n'
         tmpstr = tmpstr + ')'
         return tmpstr
+
+
+class Identity(nn.Module):
+
+    def forward(self, x):
+        return x
 
 
 class Flatten(nn.Module):
