@@ -421,7 +421,7 @@ class WTACoder(PSequential):
         nw = self.num_wta
         nl = self.num_latent
         logvar_weight  = final_layer.weight[nl:nl+nw]
-        logvar_bias    = final_layer.bias[nl:nl+nw] if hasattr(final_layer, 'bias') else 0
+        logvar_bias    = final_layer.bias[nl:nl+nw] if hasattr(final_layer, 'bias') and final_layer.bias is not None else 0
         logvar_wvar  = (logvar_weight/nw).var().data[0]
         logvar_bmean = logvar_bias.mean().data[0] if logvar_bias != 0 else 0 
         return multiplier, logvar_wvar, logvar_bmean
