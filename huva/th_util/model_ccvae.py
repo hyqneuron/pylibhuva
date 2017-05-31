@@ -174,11 +174,26 @@ class GaussianCoder(nn.Sequential):
 
 
 class WTACoder(PSequential):
+    """
+    At this point WTACoder has grown to such a monstrous size we must consider refactoring it. We can create several
+    subclasses of it depending on the sampling mode, though that would break the external interface. An alternative
+    method, which preserves the external interface, is to use internal delegation. For every sampling mode, we delegate
+    forward_hook, sample, and get_loss_z
+
+    These are the sampling modes we currently have:
+    - deterministic:    fake loss for debugging
+    - stochastic:       one-hot stochastic
+    - gumbel:           relaxed one-hot, using discrete KLD
+    - concrete:         relaxed one-hot, using concrete KLD
+
+    persample_kld is not itself a sampling mode, however it does modify the way loss_z is computed.
+    """
     def __init__(self, 
             layers, mean_normalizer, logvar_normalizer,
             num_latent, num_continuous=0,
             output_nonlinear=False, share_logvar=False,
-            persample_kld=False, nocat=False, stochastic=True, 
+            persample_kld=False, 
+            stochastic=True, concrete=False,
             gumbel=False, gumbel_init=1, gumbel_decay=1, gumbel_step=999999999,
             bypass_mode='BN', mult=1, mult_learn=False, mult_mode="multiply",
             use_gaus=True):
@@ -206,33 +221,23 @@ class WTACoder(PSequential):
         if share_logvar: # when logvar is shared, it cannot be an independent multiplier
             assert mult==1 and mult_learn==False, ('when logvar is shared between categorical and gaussian, '
                                                    'multiplier must not be learnable and must be 1')
-        """ sampling mode """
+        """ loss_z mode """
         self.persample_kld = persample_kld      # per-sample KLD provides high-variance KLD gradient estimate
-        self.nocat         = nocat              # use P_cat as a multiplier instead of a distribution
+        """ 
+        sampling mode 
+        - non-stochastic:   fake loss for debugging
+        - stochastic:       one-hot
+        - concrete:         relaxed one-hot with concrete loss
+        - gumbel:           relaxed one-hot with discrete loss
+        """
         self.stochastic    = stochastic         # stochastic sampling, can be disabled for debugging
+        self.concrete      = concrete
         self.gumbel        = gumbel             # gumbel_softmax sampling reduces variance for both KLD and logP
         self.gumbel_init   = gumbel_init        # initial temperature
         self.gumbel_decay  = gumbel_decay       # gumbel softmax annealing
         self.gumbel_step   = gumbel_step        # gunbel softmax annealing
         # sanity checks for sampling modes
-        assert sum([nocat, stochastic, gumbel]) <= 1, 'At most one of nocat, stochastic, gumbel can be True. '
-        if nocat:
-            """ 
-            note that nocat affects several things:
-            1. forward: 
-                P_cat is output as is
-                P_gaus has its mean multiplied by P_cat
-                P_gaus has its var  multiplied by P_cat**2
-                P_gaus has its logvar recomputed from var
-            2. sample: 
-                no categorical sampling is used
-            3. get_loss_z:
-                persample_kld is not allowed
-                loss_cat is set to 0.0
-                loss_gaus is computed as is, without multiplication with a mask
-                adaptive_mean and adaptive_var computed using 
-            """
-            assert persample_kld==False, 'When categorical distribution is not used, persample_kld makes no sense'
+        assert sum([stochastic, concrete, gumbel]) <= 1, 'At most one of stochastic, gumbel can be True. '
         if gumbel:
             self.steps_taken = 0
         else:
@@ -279,16 +284,10 @@ class WTACoder(PSequential):
         else:
             BNM = self.mult * BN
         P_cat = F.softmax(BNM)
-        """ handle nocat """
-        if self.nocat:
-            var = var * P_cat * P_cat
-            logvar = (var+1e-10).log()
-            # mean is modified in the next step
         """ choose which categorical mean to output as mean"""
         if self.bypass_mode != 'ST':
             mean = mean.clone()
-            source = BN if self.bypass_mode == 'BN' else BNM
-            mean[:, :self.num_wta] = source * (P_cat if self.nocat else 1)
+            mean[:, :self.num_wta] = BN if self.bypass_mode == 'BN' else BNM 
         """ upward output """
         if self.output_nonlinear:
             upward_output = mean.clone()
@@ -311,8 +310,7 @@ class WTACoder(PSequential):
 
         """ fill up absent P for top-layer prior """
         if P is None:
-            if not self.nocat:
-                P_cat = Variable(new_as(Q_cat.data).fill_(1.0/self.num_wta))
+            P_cat = Variable(new_as(Q_cat.data).fill_(1.0/self.num_wta))
             """ below is needed for sampling """
             # compute current mean and var
             q_mean, q_logvar, q_var = Q_gaus
@@ -341,7 +339,10 @@ class WTACoder(PSequential):
         else:
             P_gaus, P_cat = P[1:-1], P[-1]
         """ compute loss """
-        loss_cat = kld_for_categoricals(Q_cat, P_cat, sample_mask=sample_mask) if not self.nocat else 0.0
+        if self.concrete:
+            loss_cat = kld_for_concretes(Q_cat, P_cat) # concrete KLD does not support persample_kld
+        else:
+            loss_cat = kld_for_categoricals(Q_cat, P_cat, sample_mask=sample_mask)
         if self.use_gaus:
             loss_gaus = kld_for_gaussians(Q_gaus, P_gaus, do_sum=False)
             full_mask = self.expand_mask(sample_mask)
@@ -363,11 +364,9 @@ class WTACoder(PSequential):
     def sample(self, P):
         upward_output, mean, logvar, var, P_cat = P
         """ sample a categorical mask """
-        if self.nocat:
-            cat_mask = Variable(thu.new_as(P_cat.data).fill_(1)) # every component is used equally
-        elif self.stochastic:
+        if self.stochastic:
             cat_mask = Variable(gumbel_max      (P_cat.data.log()))         # gumbel_max works with logp, more flexible than multinomial_max
-        elif self.gumbel:
+        elif self.gumbel or self.concrete:
             T = 0 if not self.training else self.gumbel_init * self.gumbel_decay ** int(self.steps_taken / self.gumbel_step)
             cat_mask = Variable(gumbel_softmax  (P_cat.data.log(), T=T))    # gumbel_softmax requires logp
         else:

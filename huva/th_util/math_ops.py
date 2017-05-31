@@ -174,4 +174,12 @@ def kld_for_uniform_categorical(q, do_sum=True, sample_mask=None, eps=1e-10):
     return result
 
 
+"""
+===============================================================================
+Concrete costs for VAEs
+===============================================================================
+"""
+
+def kld_for_concretes(q,p, do_sum=True, eps=1e-10):
+    pass
 
