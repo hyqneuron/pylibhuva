@@ -345,7 +345,7 @@ class WTACoder(PSequential):
             loss_cat = kld_for_categoricals(Q_cat, P_cat, sample_mask=sample_mask)
         if self.use_gaus:
             loss_gaus = kld_for_gaussians(Q_gaus, P_gaus, do_sum=False)
-            full_mask = self.expand_mask(sample_mask)
+            full_mask = self.expand_mask(sample_mask) if not self.concrete else 1
             loss_gaus = (loss_gaus * full_mask).sum()
         else:
             loss_gaus = 0
@@ -397,7 +397,6 @@ class WTACoder(PSequential):
         full_size = list(cat_mask.size())
         full_size[1] += self.num_continuous
         if self.num_wta < self.num_latent: # has continuous components
-            assert False # FIXME debugging
             full_mask = Variable(cat_mask.data.new().resize_(*full_size))
             full_mask[:, :self.num_wta] = cat_mask  # gradient not needed
             full_mask[:, self.num_wta:] = 1         # simply copy continous components
