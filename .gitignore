@@ -1,6 +1,5 @@
 *.pyc
-*.swp
-*.swo
-*.swn
+*.sw*
+*.so
 local_config.py
 test
