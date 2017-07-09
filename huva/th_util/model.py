@@ -6,6 +6,8 @@ import torch.nn.functional as F
 from collections import OrderedDict
 import math
 from functools import wraps
+from .base import new_as
+import functions as FS
 
 """
 Weight normalization
@@ -124,8 +126,9 @@ class CachedSequential(nn.Sequential):
         return input
 
 
-class PSequential(nn.Sequential): # Pretty Sequential, allow __repr__ customization
+class PSequential(nn.Sequential): 
 
+    # Pretty Sequential, allow __repr__ customization
     def __repr__(self, additional=''):
         tmpstr = self.__class__.__name__ + ' ({},'.format(additional)+'\n'
         for key, module in self._modules.items():
@@ -215,6 +218,62 @@ class ChannelToSpace(StridingTransform):
                 .view(N, C, H, W)
 
 
+class DepthwiseConv2d(nn.Module):
+
+    def __init__(self, in_channels, k=3, stride=1, padding=1):
+        assert k==3 and stride==1 and padding==1, 'currently only support k=3, stride=1, padding=1'
+        super(DepthwiseConv2d, self).__init__()
+        self.in_channels = in_channels
+        self.k           = k
+        self.stride      = stride
+        self.padding     = padding
+        self.weight = Parameter(torch.Tensor(in_channels, k, k))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        stdv = 1. / math.sqrt(self.k*self.k)
+        self.weight.data.uniform_(-stdv, stdv)
+
+    def forward(self, input):
+        return FS.DepthwiseConv2dCHW()(input, self.weight)
+
+    def __repr__(self):
+        return '{}(in_channels={}, k={}, stride={}, padding={})'.format(
+                self.__class__.__name__, self.in_channels, self.k, self.stride, self.padding)
+
+
+class SparsePointwiseConv2d(nn.Module):
+
+    def __init__(self, in_channels, out_channels):
+        super(SparsePointwiseConv2d, self).__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.weight = Parameter(torch.Tensor(out_channels, in_channels))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        stdv = 1. / math.sqrt(self.in_channels)
+        self.weight.data.uniform_(-stdv, stdv)
+
+    def forward(self, c1hw, indices):
+        """
+        c1hw -> hwc1 -> kc1 -> kc2 -> hwc2 -> c2hw
+        """
+        assert c1hw.dim() == 4
+        N, C, H, W = c1hw.size()
+        assert N==1 and C==self.in_channels
+        hwc1 = c1hw.permute(0, 2, 3, 1).contiguous()# this one requires contiguous
+        kc1 = FS.SpatialGatherHWC()(hwc1, indices)
+        kc2 = self._backend.Linear()(kc1, self.weight)
+        hwc2 = FS.SpatialScatterHWC(H, W)(kc2, indices)
+        c2hw = hwc2.permute(0, 3, 1, 2).contiguous()
+        return c2hw
+
+    def __repr__(self):
+        return '{}(in_channels={}, out_channels={})'.format(
+                self.__class__.__name__, self.in_channels, self.out_channels)
+
+
 class ScalarOp(nn.Module):
     def __init__(self, init_val=1, learnable=True, apply_exp=False):
         super(ScalarOp, self).__init__()
@@ -298,10 +357,62 @@ class GaussianSplit(nn.Module):
         nn.Module.__init__(self)
         self.split_position = split_position
 
-    def forward(self, x):
-        mean   = x[:, :self.split_position]
-        logvar = x[:, self.split_position:]
+    def forward(self, input):
+        mean   = input[:, :self.split_position]
+        logvar = input[:, self.split_position:]
         return (mean, logvar, logvar.exp())
+
+
+class SplitBatchNorm(nn.Module):
+
+    def __init__(self, num_part1, num_part2, spatial, affines=(True, True)):
+        nn.Module.__init__(self)
+        self.num_part1 = num_part1
+        self.num_part2 = num_part2
+        self.spatial = spatial
+        if spatial:
+            self.bn1 = nn.BatchNorm2d(num_part1, affine=affines[0])
+            self.bn2 = nn.BatchNorm2d(num_part2, affine=affines[1])
+        else:
+            self.bn1 = nn.BatchNorm1d(num_part1, affine=affines[0])
+            self.bn2 = nn.BatchNorm1d(num_part2, affine=affines[1])
+
+    def forward(self, input):
+        part1 = input[:, :self.num_part1].contiguous()
+        part2 = input[:, self.num_part1:].contiguous()
+        part1_bned = self.bn1(part1)
+        part2_bned = self.bn2(part2)
+        return torch.cat([part1_bned, part2_bned], 1)
+
+
+class PCALayer(nn.Module):
+
+    def __init__(self, V, mean, direction):
+        assert direction in ['encode', 'decode']
+        super(PCALayer, self).__init__()
+        self.direction = direction
+        self.register_buffer('V', V)
+        self.register_buffer('mean', mean)
+
+    def reset(self, V, mean):
+        self.register_buffer('V', V)
+        self.register_buffer('mean', mean)
+
+    def forward(self, input):
+        if self.direction=='encode':
+            return self.encode(input)
+        else:
+            return self.decode(input)
+
+    def encode(self, data):
+        shifted = data - Variable(self.mean.expand_as(data))
+        coded   = torch.mm(shifted, Variable(self.V))
+        return coded
+
+    def decode(self, coded):
+        shifted = torch.mm(coded, Variable(self.V.t()))
+        data    = shifted + Variable(self.mean.expand_as(shifted))
+        return data
 
 
 def init_weights(module):

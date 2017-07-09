@@ -4,6 +4,7 @@ from torch.nn.parameter import Parameter
 import torch.nn.functional as F
 from collections import OrderedDict
 import math
+from .base import *
 
 
 def new_add_channels(x, dim, additional_channels, init_val=None, add_val=None):
@@ -82,7 +83,8 @@ def gumbel_softmax(x, out, T=1):
 def multinomial_max(p, out, T=None):
     """ x: probability for categories """
     out.zero_()
-    labels  = p.view(p.size(0), -1).multinomial(1).view(p.size())
+    # FIXME does not work for 4D tensor
+    labels  = p.view(p.size(0), -1).multinomial(1)
     out.scatter_(1, labels, 1)
     return out.float()
 
@@ -99,7 +101,7 @@ Gaussian costs for VAEs
 ===============================================================================
 """
 
-def kld_for_gaussians((mean1, logvar1, var1), (mean2, logvar2, var2), do_sum=True):
+def kld_for_gaussians((mean1, logvar1, var1), (mean2, logvar2, var2), do_sum=False):
     """
     Compute the KL-divergence between two diagonal Gaussians.
 
@@ -113,24 +115,20 @@ def kld_for_gaussians((mean1, logvar1, var1), (mean2, logvar2, var2), do_sum=Tru
     term1 = logvar2 - logvar1
     term2 = (var1 + (diff*diff)) / (var2+1e-8 )
     result = (term1 + term2 - 1) * 0.5
-    if do_sum:
-        result =  result.sum()
-    return result
+    return result.sum() if do_sum else result
 
 
-def kld_for_unit_gaussian(mean, logvar, var, do_sum=True):
+def kld_for_unit_gaussian((mean, logvar, var), do_sum=False):
     """
     Compute the KL-divergence from a diagonal Gaussian to an isotropic Gaussian
 
     See Autoencoding Variational Bayes by Kingma for derivation.
     """
     result = -0.5 * (1 + logvar - mean*mean - var)
-    if do_sum:
-        result =  result.sum()
-    return result
+    return result.sum() if do_sum else result
 
 
-def nl_for_gaussian(x, (mean, logvar, var), do_sum=True):
+def nl_for_gaussian(x, (mean, logvar, var), do_sum=False):
     """
     Compute the negative logarithm of P(x|z) under the Gaussian distribution
     P(x|z) = [1/(2pi*var)**0.5] * exp((x-mean)**2 / (2*var))
@@ -141,9 +139,45 @@ def nl_for_gaussian(x, (mean, logvar, var), do_sum=True):
     term1 = math.log(2*math.pi) + logvar
     term2 = (x-mean)**2 / (var + 1e-10)
     result = 0.5 * (term1+term2)
-    if do_sum:
-        result = result.sum()
-    return result
+    return result.sum() if do_sum else result
+
+
+"""
+===============================================================================
+Laplacian costs for VAEs
+===============================================================================
+"""
+
+def kld_for_laplacians(z, (q_mean, q_logstd, q_std), (p_mean, p_logstd, p_std), do_sum=False):
+    """
+    per-sample KLD of two laplacians, using the first distribution as sampling distribution.
+    compute log(Q(z)/P(z))
+    Note: log(1/2) cancel out in the subtraction
+    """
+    logQ = -q_logstd - (z - q_mean).abs() / q_std
+    logP = -p_logstd - (z - p_mean).abs() / p_std
+    result = logQ - logP
+    return result.sum() if do_sum else result
+
+
+def kld_for_unit_laplacian(z, (q_mean, q_logstd, q_std), do_sum=False):
+    logQ = -q_logstd - (z - q_mean).abs() / q_std
+    logP = - z.abs()
+    result = logQ - logP
+    return result.sum() if do_sum else result
+
+
+def nl_for_laplacian(z, (mean, logstd, std), do_sum=False):
+    result = logstd + (z - mean).abs() / std + math.log(2)
+    return result.sum() if do_sum else result
+
+
+def sample_unit_laplacian(template):
+    sign_switch       = new_as(template).fill_(0.5).bernoulli_() * 2 - 1
+    exponential_noise = new_as(template).exponential_()
+    return (0.5 * exponential_noise) * sign_switch
+
+
 
 """
 ===============================================================================
@@ -151,7 +185,7 @@ Categorical costs for VAEs
 ===============================================================================
 """
 
-def kld_for_categoricals(q, p, do_sum=True, sample_mask=None, eps=1e-10):
+def kld_for_categoricals(q, p, do_sum=False, sample_mask=None, eps=1e-10):
     """
     - (q * (p / q).log()).sum()
     = (q * (q / p).log()).sum()
@@ -160,26 +194,50 @@ def kld_for_categoricals(q, p, do_sum=True, sample_mask=None, eps=1e-10):
     """
     result = (q / (p+eps) + eps).log()
     result = result * (q if sample_mask is None else sample_mask)
-    if do_sum:
-        result = result.sum()
-    return result
+    return result.sum() if do_sum else result
 
 
-def kld_for_uniform_categorical(q, do_sum=True, sample_mask=None, eps=1e-10):
+def kld_for_uniform_categorical(q, do_sum=False, sample_mask=None, eps=1e-10):
     C = q.size(1) # number of channels
     result = (q * C + eps).log()
     result = result * (q if sample_mask is None else sample_mask)
-    if do_sum:
-        result = result.sum()
-    return result
+    return result.sum() if do_sum else result
 
 
 """
 ===============================================================================
-Concrete costs for VAEs
+PCA
 ===============================================================================
 """
 
-def kld_for_concretes(q,p, do_sum=True, eps=1e-10):
-    pass
+def pca_on_data(data):
+    """
+    data is NxK, N is number of samples. K is dimension of one sample
+    """
+    assert data.dim()==2
+    mean    = data.mean(0)
+    shifted = data - mean.expand_as(data)
+    C       = shifted.t().mm(shifted)
+    e, V  = torch.symeig(C, eigenvectors=True)
+    return e, V, mean
+
+
+class PCAProcessor:
+
+    def __init__(self, e, V, mean):
+        self.e = e
+        self.V = V
+        self.mean = mean
+
+    def encode(self, data):
+        shifted = data - self.mean.expand_as(data)
+        coded = shifted.mm(self.V)
+        return coded
+
+    def decode(self, coded):
+        shifted   = coded.mm(self.V.t())
+        data = shifted + self.mean.expand_as(decoded)
+        return data
+
+
 

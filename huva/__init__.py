@@ -6,6 +6,8 @@ General utilities in this file
 """
 import cv2
 import numpy as np
+from collections import OrderedDict
+import cPickle
 
 
 def clip(val, minval, maxval):
@@ -40,11 +42,15 @@ class LogPrinter:
     In addition to printing the message, also log it into the logfile
     """
 
-    def __init__(self, filename):
+    def __init__(self, filename, struct_name=None):
         self.logtxt = ''
-        self.file = open(filename, 'w')
+        self.struct_dict = OrderedDict()
+        struct_name = struct_name or filename+'.pkl'
+        self.file        = open(filename, 'w')
+        self.struct_file = open(struct_name, 'w')
 
     def log(self, val, show_onscreen=True):
+        # print a log message and add it to file also
         try:
             txt = str(val) + '\n'
             self.logtxt += txt
@@ -55,16 +61,12 @@ class LogPrinter:
         if show_onscreen:
             print(val)
 
+    def log_struct(self, key, value):
+        # add to dict without printing
+        self.struct_dict[key] = value
+
     def close(self):
         self.file.close()
+        cPickle.dump(self.struct_dict, self.struct_file, protocol=-1)
+        self.struct_file.close()
 
-
-class StructuredLogPrinter:
-    """
-    write logfile to a filename, while preserving logged data in a similar file
-    """
-
-    def __init__(self, filename):
-        self.logtxt = ''
-        self.file = open(filename, 'w')
-        self.data = {}

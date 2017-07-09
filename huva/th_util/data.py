@@ -41,13 +41,14 @@ class TensorDataset(Dataset):
 
 class TensorDatasetIterator(object):
 
-    def __init__(self, dataset, batch_size, indices):
+    def __init__(self, dataset, batch_size, indices, empty_label=False):
         assert type(dataset) in [TensorDataset], 'dataset must be a TensorDataset'
         assert dataset.transform is None, 'per-sample stochastic transform not supported'
         self.dataset = dataset
         self.batch_size = batch_size
         self.position = 0
         self.indices = indices
+        self.empty_label = empty_label
 
     def __next__(self):
         # FIXME we are bypassing dataset.transform!!!
@@ -58,6 +59,8 @@ class TensorDatasetIterator(object):
         result = self.dataset.tensor[index]
         if self.dataset.labels is not None:
             result = result, self.dataset.labels[index]
+        if self.empty_label:
+            result = result, None
         return result
 
     next = __next__
@@ -69,12 +72,13 @@ class TensorLoader(object):
     Speeds up MLP on MNIST by 2x.
     """
 
-    def __init__(self, dataset, batch_size, shuffle=False, indices=None, gpu=False):
+    def __init__(self, dataset, batch_size, shuffle=False, indices=None, gpu=False, empty_label=False):
         assert isinstance(dataset, TensorDataset), 'dataset must be a TensorDataset'
         assert dataset.transform is None, 'per-sample stochastic transform not supported'
         self.dataset = dataset
         self.batch_size = batch_size
         self.gpu = gpu
+        self.empty_label = empty_label
         """
         We allow user to specify fixed traversal order using indices. When indices is given, we cannot shuffle
         """
@@ -91,22 +95,10 @@ class TensorLoader(object):
             else:
                 indices = torch.range(0, len(self.dataset)-1).long().split(self.batch_size)
         if self.gpu: indices = [index.cuda() for index in indices]
-        return TensorDatasetIterator(self.dataset, self.batch_size, indices)
+        return TensorDatasetIterator(self.dataset, self.batch_size, indices, self.empty_label)
 
     def __len__(self):
         return int(math.ceil(len(self.dataset) / float(self.batch_size)))
-
-
-"""
-class ViewTransform(object):
-
-    def __init__(self, size):
-        assert isinstance(size, torch.Size)
-        self.size = size
-
-    def __call__(self, tensor):
-        return tensor.view(self.size)
-"""
 
 
 def make_data_mnist(batch_size, normalize=True, spatial=False, gpu=True, shuffle_train=True, shuffle_test=False):
@@ -184,7 +176,7 @@ def make_tensor_binary_mnist():
     return tensor_train, tensor_test
 
 
-def make_data_binary_mnist(batch_size, spatial=False, shuffle_train=True, shuffle_test=False, gpu=True):
+def make_data_binary_mnist(batch_size, spatial=False, shuffle_train=True, shuffle_test=False, gpu=True, empty_label=False):
     resize = torch.Size([784]) if not spatial else torch.Size([1,28,28])
     tensor_train, tensor_test = make_tensor_binary_mnist()
     if spatial:
@@ -195,8 +187,8 @@ def make_data_binary_mnist(batch_size, spatial=False, shuffle_train=True, shuffl
         tensor_test  = tensor_test.cuda()
     dataset_train = TensorDataset(tensor_train, resize=resize)
     dataset_test  = TensorDataset(tensor_test , resize=resize)
-    loader_train  = TensorLoader(dataset_train, batch_size, shuffle=shuffle_train, gpu=gpu)
-    loader_test   = TensorLoader(dataset_test,  batch_size, shuffle=shuffle_test,  gpu=gpu)
+    loader_train  = TensorLoader(dataset_train, batch_size, shuffle=shuffle_train, gpu=gpu, empty_label=empty_label)
+    loader_test   = TensorLoader(dataset_test,  batch_size, shuffle=shuffle_test,  gpu=gpu, empty_label=empty_label)
     return (dataset_train, loader_train), (dataset_test, loader_test)
 
 
