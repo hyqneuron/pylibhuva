@@ -5,10 +5,12 @@ from torch.autograd import Variable
 from .base import *
 from .math_ops import *
 
+
 class Distribution(nn.Module):
 
     def forward(self, input):
         # returns a representation of the computed distribution
+        # E.g. Gaussian returns (mean, logvar, var) while Bernoulli returns just P
         raise NotImplementedError
 
     def P(self, x, P):
@@ -37,32 +39,16 @@ class Distribution(nn.Module):
 
 class Coder(nn.Sequential):
     """
-    A Coder is either an encoder or a decoder. It has a list of internal layers, which it uses to convert an input value
-    to an output distribution.
+    A Coder combines a list of nn.Modules with a Distribution.  It maps an input value to an output distribution with
+    the help that list of layers.
     """
 
-    def __init__(self, layers, distribution, critic=False):
-        """
-        critic: if a critic layer is used in this coder
-
-        We should implement critic as a plugin for generality. But right now the critic plugin is the only one I can
-        think of, so we go for a specific implementation instead.
-        """
+    def __init__(self, layers, distribution):
         super(Coder, self).__init__(*layers)
         self.distribution = distribution
-        self.critic = critic
-        if critic:
-            self.critic_value = None
 
     def forward(self, x):
         output = super(Coder, self).forward(x)
-        # if this coder has an interval layer that outputs a critic value, extract it
-        if self.critic:
-            assert type(output) in [tuple, list], 'a coder containing critic must output a tuple/list, with the last element being a critic value'
-            assert len(output) >= 2
-            self.critic_value = output[-1]
-            output = output[:-1]
-            output = output[0] if len(output)==1 else output
         return self.distribution(output)
 
     def __getattr__(self, key):
@@ -77,27 +63,18 @@ def extract_mean(P):
     return P[0] if type(P) in [tuple, list] else P
 
 
-def split_mean_logvar(mean_logvar, num_latent):
-    assert mean_logvar.size(1) == num_latent * 2
-    mean   = mean_logvar[:, :num_latent]
-    logvar = mean_logvar[:, num_latent:]
-    return mean, logvar
-
-
 """
 ==================================================================================================
 Distributions
+
+Gaussian, Laplacian, Bernoulli, AltGaussian
 ==================================================================================================
 """
 
 class Gaussian(Distribution):
 
-    def __init__(self, num_latent):
-        super(GaussianCoder, self).__init__()
-        self.num_latent = num_latent
-
     def forward(self, x):
-        mean, logvar = split_mean_logvar(x, self.num_latent)
+        mean, logvar = x.chunk(2, dim=1)
         return (mean, logvar, logvar.exp())
 
     def logP(self, x, P):
@@ -126,18 +103,13 @@ class Gaussian(Distribution):
         return mean + noise * std
 
     def sample_prior(self, template):
-        assert template.size(1) == self.num_latent
         return Variable(new_as(template.data).normal_())
 
 
 class Laplacian(Distribution):
 
-    def __init__(self, num_latent):
-        super(Laplacian, self).__init__()
-        self.num_latent = num_latent
-
     def forward(self, x):
-        mean, logstd = split_mean_logvar(x, self.num_latent)
+        mean, logstd = x.chunk(2, dim=1)
         return (mean, logstd, logstd.exp())
 
     def logP(self, x, P):
@@ -198,7 +170,7 @@ class AltGaussian(Gaussian):
     """
 
     def __init__(self, num_latent, alpha, softmax_correction):
-        GaussianCoder.__init__(self, num_latent)
+        GaussianCoder.__init__(self)
         K = num_latent
         self.alpha   = alpha
         self.softmax_correction = softmax_correction
@@ -235,7 +207,6 @@ class AltGaussian(Gaussian):
         return mean, logvar, var
 
     def sample_prior(self, template):
-        assert template.size(1) == self.num_latent
         return Variable(new_as(template.data).normal_(self.prior_mean[0,0], math.sqrt(self.prior_var[0,0])))
 
 

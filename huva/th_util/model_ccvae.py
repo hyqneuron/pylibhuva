@@ -47,6 +47,29 @@ Hierarchical VAE
 
 
 """
+TODOs:
+[x] return NLL and KLD as (N,1)
+[x] make sure VAE does sum/mean on its own
+[x] Use logP to compute KLD in Distribution
+[ ] make sample_prior return according to a template
+[x] Support prior KLD
+    [x] prior_P(template)
+    [x] corresponding changes in VAE, SleepVAE, hVAE and so on
+[x] Complete sVAE
+    [x] SleepVAE
+    [x] sVAE
+[x] Complete hsVAE
+    [x] hSleepVAE
+    [x] hsVAE
+[-] alternative costs
+    [x] support critic in Coder
+    [x] support critic as an extension of VAE. 
+    [ ] implement importance-weighted updates
+    [ ] implement critic-based updates
+
+"""
+
+"""
 ===============================================================================
 Abstract classes
 
@@ -132,22 +155,20 @@ class VAE(BaseVAE):
         return x, Q, z, P
 
     def get_losses(self, do_mean=True):
-        P    = self.encoder.prior_P(self.Q)
-        KLD  = self.encoder.KLD(self.z, self.Q, P)
-        NLL  = self.decoder.NLL(self.x, self.P)
+        P    = self.prior_P(self.Q)
+        KLD  = self.KLD(self.z, self.Q, P)
+        NLL  = self.NLL(self.x, self.P)
         if do_mean:
             KLD = KLD.mean()
             NLL = NLL.mean()
         loss = KLD + NLL
-        # note loss is (N,1)
-        # This is the point to insert alternative costs
         return loss, KLD, NLL
 
     def KLD(self, z, Q, P):
-        return self.encoder.KLD(z,Q,P)
+        return self.encoder.KLD(z,Q,P).sum(1)
 
     def NLL(self, x, P):
-        return self.decoder.NLL(x, P)
+        return self.decoder.NLL(x, P).sum(1)
 
     def prior_P(self, template):
         return self.encoder.prior_P(template)
@@ -186,7 +207,7 @@ class hVAE(nn.Sequential, BaseVAE): # inherits nn.Sequential for its nice printi
             if self.pass_sample: # sample
                 inp = z
             else:                # distro mean
-                inp = Q[0] if type(Q) in [tuple, list] else Q # pass the first element in Q (usually mean) to higher stage
+                inp = extract_mean(Q)
         return x, Qs, zs, Ps
 
     def get_losses(self, do_mean=True):
@@ -223,28 +244,6 @@ class hVAE(nn.Sequential, BaseVAE): # inherits nn.Sequential for its nice printi
 
 
 """
-TODOs:
-[x] return NLL and KLD as (N,1)
-[x] Use logP to compute KLD in Distribution
-[x] make sample_prior return according to a template
-[x] Support prior KLD
-    [x] prior_P(template)
-    [x] corresponding changes in VAE, SleepVAE, hVAE and so on
-[x] Complete sVAE
-    [x] SleepVAE
-    [x] sVAE
-[x] Complete hsVAE
-    [x] hSleepVAE
-    [x] hsVAE
-[-] alternative costs
-    [x] support critic in Coder
-    [x] support critic as an extension of VAE. 
-    [ ] implement importance-weighted updates
-    [ ] implement critic-based updates
-
-"""
-
-"""
 ===============================================================================
 Debug coders
 
@@ -253,6 +252,11 @@ MSE, Fake
 """
 
 class MSEDecoder(PSequential):
+    """
+    For debugging VAEs. Propagates input from layers as-is.
+    - KLD: doesn't support
+    - NLL: MSE
+    """
 
     def __init__(self, layers):
         super(MSEDecoder, self).__init__(*layers)
@@ -261,19 +265,21 @@ class MSEDecoder(PSequential):
         raise NotImplementedError, '{} does not support encoding z'.format(self.__class__)
 
     def NLL(self, x, P):
-        NLL = (P - x).pow(2).mean(1) # MSE
+        NLL = (P - x).pow(2).mean(1) # MSE, note the change of shape is somewhat dangerous
         return NLL # NLL / x.size(0)
 
     def sample(self, P):
         return P
 
-    def sample_prior(self, num_samples):
+    def sample_prior(self, num_samples): # FIXME
         raise NotImplementedError
 
 
 class FakeCoder(PSequential):
     """ 
-    For debugging VAEs. Propagates input from layers as-is, does not compute z-cost 
+    For debugging VAEs. Propagates input from layers as-is.
+    - KLD: 0
+    - NLL: doesn't support
     """
 
     def __init__(self, layers):
@@ -289,7 +295,7 @@ class FakeCoder(PSequential):
     def sample(self, P):
         return P
 
-    def sample_prior(self, num_samples):
+    def sample_prior(self, num_samples): # FIXME
         if hasattr(self.layers[-1], 'sample_prior'):
             return self.layers[-1].sample_prior(num_samples)
         else:
@@ -392,7 +398,7 @@ class WTALayer(nn.Module):
         mask = plain_max(input.data)
         return input * Variable(mask)
 
-    def sample_prior(self, num_samples):
+    def sample_prior(self, num_samples): # FIXME
         assert num_samples <= self.num_latent
         sample = torch.zeros(num_samples, self.num_latent)
         for i in xrange(num_samples):
@@ -474,7 +480,7 @@ class HierarchicalWTALayer(nn.Module):
                         gsum_mask.unsqueeze(2).expand(N, num_groups, num_categories).contiguous().view(N, num_groups*num_categories))
         return total_smooth * total_mask
 
-    def sample_prior(self, num_samples):
+    def sample_prior(self, num_samples): # FIXME
         K = self.num_groups * self.num_categories
         assert num_samples <= K, 'not sure how to take more than {} samples from prior for WTA'.format(K)
         prior_sample = torch.zeros(num_samples, K)
@@ -615,7 +621,7 @@ class SWTACoder(PSequential):
     def NLL(self, x, P):
         raise NotImplementedError, '{} does not support decoding x'.format(self.__class__.__name__)
 
-    def sample_prior(self, num_samples):
+    def sample_prior(self, num_samples): # FIXME
         assert num_samples <= self.num_latent, 'not sure how to take more than self.num_latent samples from prior for SOM'
         prior_sample = torch.zeros(num_samples, self.num_latent)
         mean, std    = self.adaptive_mean, math.sqrt(self.adaptive_var)
@@ -884,43 +890,4 @@ class WTACoder(PSequential):
         logvar_wvar  = (logvar_weight/nw).var().data[0]
         logvar_bmean = logvar_bias.mean().data[0] if logvar_bias != 0 else 0 
         return multiplier, logvar_wvar, logvar_bmean
-
-
-class STCategory(torch.nn.Module):
-    """ straight-through categorical """
-
-    def __init__(self, stochastic=True, forget_mask=False):
-        super(STCategory, self).__init__()
-        self.stochastic  = stochastic
-        self.forget_mask = forget_mask
-
-    def forward(self, x):
-        """
-        if self.stochastic:
-            mask = Variable(gumbel_max(x.data)) # gumbel_max must use logit
-        else:
-            mask = Variable(plain_max(x.data)) # plain_max accepts either logit or probability
-        return x * mask.float()
-        """
-
-        if self.stochastic:
-            mask = Variable(gumbel_max(x.data))
-        else:
-            mask = Variable(plain_max(x.data))
-        return FuncSTCategorical(self.stochastic, self.forget_mask)(x, mask)
-
-    def __repr__(self):
-        return "{}(stochastic={}, forget_mask={})".format(self.__class__.__name__, self.stochastic, self.forget_mask)
-
-
-class OneHotSTCategory(torch.nn.Module):
-
-    def __init__(self, stochastic=False, forget_mask=False):
-        super(OneHotSTCategory, self).__init__()
-        self.stochastic  = stochastic
-        self.forget_mask = forget_mask
-
-    def forward(self, x):
-        return FuncOneHotSTCategorical(self.stochastic, self.forget_mask)(x)
-
 
