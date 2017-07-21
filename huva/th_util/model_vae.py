@@ -26,6 +26,10 @@ def extract_mean(P):
     return P[0] if type(P) in [tuple, list] else P
 
 
+def sum_all(value):
+    return value.view(value.size(0), -1).sum(1)
+
+
 VAEState = namedtuple('VAEState', ['input', 'upper', 'code', 'lower'])
 # wake:                             x,       Q(z|x),  z,      P(x|z)
 # sleep:                            z,       P(x|z),  x,      Q(z|x)
@@ -55,12 +59,12 @@ class SimpleNetwork(nn.Module):
     
     def KLD(self, state, upper_prior):
         if upper_prior is not None:
-            return self.encoder.KLD(state.code, state.upper, upper_prior).sum(1)
+            return sum_all(self.encoder.KLD(state.code, state.upper, upper_prior))
         else: # in sleep-phase, upper_prior at top-level is unavailable, so we can only take the logP part of a KLD
-            return self.encoder.logP(state.code, state.upper).sum(1)
+            return sum_all(self.encoder.logP(state.code, state.upper))
 
     def NLL(self, state):
-        return self.decoder.NLL(state.input, state.lower).sum(1)
+        return sum_all(self.decoder.NLL(state.input, state.lower))
 
     def sample_prior(self, template=None, state=None):
         if template is None: template = extract_mean(state.upper)
