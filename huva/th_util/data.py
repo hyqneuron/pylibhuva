@@ -24,6 +24,7 @@ class TensorDataset(Dataset):
                 self.tensor[i] = pre_transform(self.tensor[i])
         if resize is not None:
             tensor = tensor.resize_(tensor.size(0), *list(resize))
+        # FIXME does resize actually work?
 
     def __getitem__(self, index):
         inp   = self.tensor[index]
@@ -192,9 +193,41 @@ def make_data_binary_mnist(batch_size, spatial=False, shuffle_train=True, shuffl
     return (dataset_train, loader_train), (dataset_test, loader_test)
 
 
-def make_data_cifar10(batch_size, train_threads=1, test_threads=1):
+def make_tensor_frey_face():
+    url = "http://www.cs.nyu.edu/~roweis/data/frey_rawface.mat"
+    assert os.path.exists(local_config.path_frey_face), "Please make sure huva.local_config.path_frey_face exists"
+    fullname = os.path.join(local_config.path_frey_face, url.split('/')[-1])
+    # download file
+    if not os.path.exists(fullname):
+        import urllib
+        urllib.urlretrieve(url, fullname)
+    # load file
+    from scipy.io import loadmat
+    np_array = loadmat(fullname)['ff'].T
+    tensor = torch.from_numpy(np_array).float()
+    return tensor
+
+
+def make_data_frey_face(batch_size, normalize=True, spatial=False, shuffle=True, gpu=True):
+    """
+    Returns the Frey face dataset as a single training set
+    """
+    tensor = make_tensor_frey_face()
+    # mean=154.46, std=44.89
+    if normalize: tensor = (tensor - 154.46) / 44.89
+    if spatial:   tensor = tensor.view(tensor.size(0), 1, 28, 20)
+    if gpu:       tensor = tensor.cuda()
+    fake_labels = tensor.new().resize_(tensor.size(0)).fill_(0).long()
+    dataset = TensorDataset(tensor, labels=fake_labels)
+    loader  = TensorLoader(dataset, batch_size=batch_size, shuffle=shuffle, gpu=gpu)
+    return dataset, loader
+
+
+def make_data_cifar10(batch_size, train_threads=1, test_threads=1, size=32):
     def make_dataset(train):
         transforms = [torchvision.transforms.RandomHorizontalFlip()] if train else [] 
+        if size != 32:
+            transforms += [torchvision.transforms.Scale(size=size)]
         transforms += [
             torchvision.transforms.ToTensor(),
             torchvision.transforms.Normalize(mean=[0.469, 0.481, 0.451], std=[0.239,0.245,0.272])

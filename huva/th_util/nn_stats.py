@@ -9,6 +9,7 @@ import os
 
 
 def normalize(tensor):
+    """ Normalize tensor to [0,1] """
     tensor = tensor - tensor.min()
     tensor = tensor / (tensor.max() + 1e-8)
     return tensor
@@ -270,18 +271,4 @@ def save_mlp_decoder_weights(w, filename):
     assert num_side**2 == num_out, 'cannot handle non-square decoder'
     w = w.t().contiguous().view(num_in, 1, num_side, num_side)
     save_image(w, filename)
-
-
-"""
-========================= Model Summary Report =======================================================
-"""
-
-
-"""
-build a tracer:
-* outgoing weight distribution, how many units in the next layer use     this unit
-* incoming weight distribution, how many units in the prev layer used by this unit
-* received gradient distribution
-* outgoing gradient distribution
-"""
 

@@ -1,8 +1,10 @@
 from .model import *
+from distribution import *
 from torch.autograd import Variable
 import torch.nn.functional as F
 import math
 import itertools
+from math_ops import *
 
 
 def clear_grads(variables):
@@ -68,15 +70,15 @@ def test_space_to_channel_multiple():
 def test_kld_for_uniform_categorical(C=10, num_samples=1):
     # verify uniforms have 0 KLD
     a = torch.Tensor(num_samples,C).fill_(1.0/C)
-    assert kld_for_uniform_categorical(a) == 0
+    assert (kld_for_uniform_categorical(a) == 0).all()
     # verify half-zero, half-double have log(2)
     if C % 2 == 0:
         b = torch.zeros(num_samples,C)
         b[:, :C/2] = 2.0 / C
         b[:, C/2:] = 1e-15
-        ans  = kld_for_uniform_categorical(b) 
+        ans  = kld_for_uniform_categorical(b).sum()
         gold = math.log(2) * num_samples
-        assert abs(ans - gold) < 1e-7, '{} == {} failed'.format(ans, gold)
+        assert abs(ans - gold) < 1e-3, '{} == {} failed'.format(ans, gold)
     # verify the sequence 1/2, 1/4, 1/8, 1/16 ... has KLD log(C) - log(2)
     # note: not enough precision..., so it's going to be very approximate
     num_ladders = 100 # only work with 100 ladders
@@ -84,14 +86,53 @@ def test_kld_for_uniform_categorical(C=10, num_samples=1):
     for i in xrange(1, num_ladders+1, 1):
         c[:, i-1] = 0.5**i
     c[:, num_ladders-1] = 0.5**(num_ladders-1)
-    ans  = kld_for_uniform_categorical(c)
+    ans  = kld_for_uniform_categorical(c).sum()
     gold = (math.log(num_ladders) - 2*math.log(2)) * num_samples
-    assert abs(ans - gold) < 1e-7, '{} == {} failed'.format(ans, gold)
+    assert abs(ans - gold) < 1e-3, '{} == {} failed'.format(ans, gold)
+
+
+def test_kld_for_uniform_categorical_multiple():
+    test_kld_for_uniform_categorical(10, 1)
+    test_kld_for_uniform_categorical(10, 10)
+    test_kld_for_uniform_categorical(1, 10)
+    test_kld_for_uniform_categorical(1, 1)
+    test_kld_for_uniform_categorical(256, 256)
+
+
+def test_pooling_continuous(N=2, C=8, H=4, W=4, s=2):
+    # verify uniform probability
+    a = Variable(torch.Tensor(N, C*2, H, W).fill_(0))
+    pc = PoolingContinuous(Gaussian(), stride=s)
+    base_mean, full_prob, cont_distro = pc(a)
+    base_prob = full_to_base(full_prob, s)
+    assert ((base_prob - (1 / float(2 * s**2))).abs() < 1e-4 ) .data.all(), base_prob
+
+    # verify increasing probability
+    for h in xrange(H):
+        for w in xrange(W):
+            hi = h % s
+            wi = w % s
+            a.data[:, :, h, w] = math.log(hi * s + wi + 1)
+    ss = s**2
+    fraction = 1 / float(ss + ss*(ss+1)/2)
+    base_mean, full_prob, cont_distro = pc(a)
+    base_prob = full_to_base(full_prob, s)
+    for h in xrange(H):
+        for w in xrange(W):
+            hi = h % s
+            wi = w % s
+            assert ((base_prob[:,:,h,w] - fraction * (hi * s + wi + 1)).abs() < 1e-4).data.all(), base_prob
+
+    # [x] verify base_mean
+    # [x] verify KLD
+    # [x] verify samples
 
 
 def test_all():
     tests = [
         test_space_to_channel_multiple,
+        test_kld_for_uniform_categorical_multiple,
+        test_pooling_continuous,
     ]
     for test in tests:
         test() # forget about exceptions, lol

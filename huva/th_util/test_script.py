@@ -5,3 +5,6 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import math
 import itertools
+
+thu.test_all()
+

@@ -9,102 +9,125 @@ from functools import wraps
 from .base import new_as
 import functions as FS
 
+
+
 """
-Weight normalization
-Modified from https://gist.github.com/rtqichen/b22a9c6bfc4f36e605a7b3ac1ab4122f
-
-weight_norm: 
-    function to wrap a nn.Module instance, making it weight-normalized
-
-weight_norm_ctor: 
-    function to wrap a nn.Module class. Result can be called as a constructor. This constructor will produce
-    weight-normalized modules.
-
-wn_decorate: 
-    modifies module's forward function to include a normalizatio step
+==================================================================================================
+Model
+==================================================================================================
 """
 
-def wn_decorate(forward, module, name, name_g, name_v, fixed_norm=None):
-    @wraps(forward)
-    def decorated_forward(*args, **kwargs):
-        g = module.__getattr__(name_g)
-        v = module.__getattr__(name_v)
-        if fixed_norm is not None: # fix norm at a certain value
-            assert isinstance(fixed_norm, float), '{} is not float'.format(fixed_norm)
-            v.data.div_(v.data.norm()/fixed_norm) # bypass gradients
-            w = v * g.expand_as(v)
-        else:
-            w = v*(g/torch.norm(v)).expand_as(v)
-        module.__setattr__(name, w)
-        return forward(*args, **kwargs)
-    return decorated_forward
+class Model(nn.Module):
+    """
+    A Model has 2 parts:
+    - network: computes forward pass (not defined in this class)
+    - loss   : computes objective of optimization.
 
+    Note that when loss has a complex structure (as in VAEs), the computation of loss might be delegated to network.
 
-def weight_norm(module, name='weight', fix_norm=False, init_prop=False):
-    param = module.__getattr__(name)
+    losses = self.get_losses(state, label) has the freedom to return whatever it wants, provided:
+    1. It is a tuple, whose first element is the default optimization objective
+    1. self.backward      (state, losses)       can perform backprop from objective
+    2. self.report_losses (state, losses)       can extract a report structure
+    3. self.average_losses(state, list_losses)  can compute average of a list of losses
+    """
 
-    # construct g,v such that w = g/||v|| * v
-    g = torch.norm(param)
-    if fix_norm:
+    def forward(self, input):
+        raise NotImplementedError
+
+    def get_losses(self, state, label):
         """
-        Without init_prop, we fix norm at 10
-        With init_prop, we fix norm at initial norm
+        state: return value of forward
         """
-        if init_prop:
-            v = param # v at this point has norm=original norm
-            fixed_norm=g.data[0]
-            g.data.fill_(1) # g start at 1
-        else:
-            v = param/g.expand_as(param) * 10.0 # v at this point has norm=10.0
-            fixed_norm=10.0
-            g.data.div_(10.0) # g start at 0.1 * original norm
+        raise NotImplementedError
+
+    def backward(self, state, losses):
+        """
+        state: return value of forward
+        losses: return value of get_losses
+
+        Backpropagation. optimizer.zero_grad() should be called before this. optimizer.step() should be called after
+        this.
+        """
+        while type(losses) in [list, tuple]:
+            losses = losses[0]
+        losses.backward()
+
+    def average_losses(self, list_losses):
+        """
+        Given a list of losses returned by get_losses, computes the average.
+        """
+        length = len(list_losses)
+        if length == 0: 
+            return 0
+        result = reduce(structured_add, list_losses)
+        return structured_divide(result, float(length))
+
+    def report_losses(self, losses):
+        """
+        losses: return value of get_losses or average_losses
+
+        Returns a subset of losses that should be reported, as structured floats
+        """
+        return extract_float(losses)
+
+    def format_losses(self, reported, prec=3):
+        """
+        reported: return value of report_losses
+
+        Returns a string representation of "reported" that can be reasonably printed.
+        """
+        return str_float(reported, prec)
+
+
+def extract_float(value):
+    if type(value) in [tuple, list]:
+        return map(extract_float, value)
+    assert value.size() == (1,)
+    return value.data[0]
+
+
+def str_float(value, prec):
+    if type(value) in [tuple, list]:
+        return '({})'.format(', '.join([str_float(val, prec) for val in value]))
+    return '{:.{prec}f}'.format(value, prec=prec)
+
+
+def structured_add(value1, value2):
+    """
+    Element-wise addition, permitting tuple and list as structures. Can be implemented as fmap, but unrolled for
+    simplicity.
+
+    E.g.: 
+        value1 = (1,2,(3,4)); value2 = (5,6,(7,8))
+        structured_add(value1, value2) = (6,8,(10,12))
+    """
+    assert type(value1) == type(value2) or (set(map(type, [value1, value2]))==set([list, tuple]))
+    if type(value1) in [tuple, list]:
+        assert len(value1) == len(value2)
+        return [structured_add(v1, v2) for v1,v2 in zip(value1, value2)]
     else:
-        v = param/g.expand_as(param) # v at this point has norm=1
-        fixed_norm = None
-        # g start at original norm
-    g = Parameter(g.data)
-    v = Parameter(v.data)
-    name_g = name + '_g'
-    name_v = name + '_v'
-
-    # remove w from parameter list
-    del module._parameters[name]
-
-    # add g and v as new parameters
-    module.register_parameter(name_g, g)
-    module.register_parameter(name_v, v)
-
-    # construct w every time before forward is called
-    module.forward = wn_decorate(module.forward, module, name, name_g, name_v, fixed_norm=fixed_norm)
-    return module
+        return value1 + value2
 
 
-def weight_norm_ctor(mod_type, name='weight', fix_norm=False, init_prop=False):
-    def init_func(*args, **kwargs):
-        mod = mod_type(*args, **kwargs)
-        return weight_norm(mod, name=name, fix_norm=fix_norm, init_prop=init_prop)
-    return init_func
-
-
-class ConvTranspose2d(nn.ConvTranspose2d):
+def structured_divide(value, denominator):
     """
-    Fixes ConvTransposed2d's weight initialization.
-    Conv2d           input size is [in_channels, k,k], output size is [out_channels,1,1]
-    ConvTransposed2d input size is [out_channels,1,1], output size is [in_channels, k,k]
+    Element-wise division by a single scalar
+
+    E.g.:
+        value = (2,4,(6,8))
+        structured_divide(value, 2) = (1,2,(3,4))
     """
+    if type(value) in [tuple, list]:
+        return [structured_divide(val, denominator) for val in value]
+    return value / denominator
 
-    def reset_parameters(self):
-        n = self.in_channels
-        """
-        remove below, because input size is in_channels by 1x1, and output size is out_channels by kxk
-        """
-        # for k in self.kernel_size:
-        #     n *= k
-        stdv = 1. / math.sqrt(n)
-        self.weight.data.uniform_(-stdv, stdv)
-        if self.bias is not None:
-            self.bias.data.uniform_(-stdv, stdv)
 
+"""
+==================================================================================================
+Modules
+==================================================================================================
+"""
 
 class CachedSequential(nn.Sequential):
     """
@@ -139,83 +162,30 @@ class PSequential(nn.Sequential):
         return tmpstr
 
 
-class Identity(nn.Module):
+"""
+==================================================================================================
+Convolutions
+==================================================================================================
+"""
 
-    def forward(self, x):
-        return x
-
-
-class Flatten(nn.Module):
+class ConvTranspose2d(nn.ConvTranspose2d):
     """
-    Flatten the output from dim-1 and onwards
-    """
-
-    def __init__(self):
-        super(Flatten, self).__init__()
-
-    def forward(self, x):
-        return x.view(x.size(0), -1)
-
-    def __repr__(self):
-        return "Flatten()"
-
-
-class View(nn.Module):
-    """
-    View output as a specific size
+    Fixes ConvTransposed2d's weight initialization.
+    Conv2d           input size is [in_channels, k,k], output size is [out_channels,1,1]
+    ConvTransposed2d input size is [out_channels,1,1], output size is [in_channels, k,k]
     """
 
-    def __init__(self, *sizes):
-        nn.Module.__init__(self)
-        self.sizes = sizes
-
-    def forward(self, x):
-        return x.view(x.size(0), *self.sizes)
-
-    def __repr__(self):
-        return "View({})".format(str(self.sizes))
-
-
-class StridingTransform(nn.Module):
-
-    def __init__(self, stride):
-        nn.Module.__init__(self)
-        self.stride = (stride, stride) if type(int(stride)) in [int, float] else stride
-        assert all(map(lambda x:type(x)==int, self.stride))
-
-    def __repr__(self):
-        return '{}(stride={})'.format(self.__class__.__name__, self.stride)
-
-
-class SpaceToChannel(StridingTransform):
-
-    def forward(self, x):
-        assert x.dim() == 4 
-        assert x.size(2) % self.stride[0] == 0 
-        assert x.size(3) % self.stride[1] == 0
-        N, C, H, W = x.size()
-        Cs = C * self.stride[0] * self.stride[1]
-        Hs = H / self.stride[0]
-        Ws = W / self.stride[1]
-        return x.view(N, C, Hs, self.stride[0], Ws, self.stride[1])\
-                .permute(0, 1, 3, 5, 2, 4)\
-                .contiguous()\
-                .view(N, Cs, Hs, Ws)
-
-
-class ChannelToSpace(StridingTransform):
-
-    def forward(self, x):
-        assert x.dim() == 4 
-        N, Cs, Hs, Ws = x.size()
-        assert Cs % (self.stride[0] * self.stride[1]) == 0
-        C = Cs / self.stride[0] / self.stride[1]
-        H = Hs * self.stride[0]
-        W = Ws * self.stride[1]
-        return x.view(N, C, self.stride[0], self.stride[1], Hs, Ws)\
-                .permute(0, 1, 4, 2, 5, 3)\
-                .contiguous()\
-                .view(N, C, H, W)
+    def reset_parameters(self):
+        n = self.in_channels
+        """
+        remove below, because input size is in_channels by 1x1, and output size is out_channels by kxk
+        """
+        # for k in self.kernel_size:
+        #     n *= k
+        stdv = 1. / math.sqrt(n)
+        self.weight.data.uniform_(-stdv, stdv)
+        if self.bias is not None:
+            self.bias.data.uniform_(-stdv, stdv)
 
 
 class DepthwiseConv2d(nn.Module):
@@ -273,6 +243,155 @@ class SparsePointwiseConv2d(nn.Module):
         return '{}(in_channels={}, out_channels={})'.format(
                 self.__class__.__name__, self.in_channels, self.out_channels)
 
+
+"""
+==================================================================================================
+Shape-changing
+==================================================================================================
+"""
+
+class Identity(nn.Module):
+
+    def forward(self, x):
+        return x
+
+
+class Flatten(nn.Module):
+    """
+    Flatten the output from dim-1 and onwards
+    """
+
+    def __init__(self):
+        super(Flatten, self).__init__()
+
+    def forward(self, x):
+        return x.view(x.size(0), -1)
+
+    def __repr__(self):
+        return "Flatten()"
+
+
+class View(nn.Module):
+    """
+    View output as a specific size
+    """
+
+    def __init__(self, *sizes):
+        nn.Module.__init__(self)
+        self.sizes = sizes
+
+    def forward(self, x):
+        return x.view(x.size(0), *self.sizes)
+
+    def __repr__(self):
+        return "View({})".format(str(self.sizes))
+
+
+class StridingTransform(nn.Module):
+
+    def __init__(self, stride):
+        """
+        A: N x C x H x W
+        B: N x C*ss x Hs x Ws
+        SpaceToChannel: A --> B
+        ChannelToSpace: B --> A
+        """
+        nn.Module.__init__(self)
+        self.stride = (int(stride), int(stride)) if type(stride) in [int, float] else stride
+        assert all(map(lambda x:type(x)==int, self.stride))
+
+    def __repr__(self):
+        return '{}(stride={})'.format(self.__class__.__name__, self.stride)
+
+
+class SpaceToChannel(StridingTransform):
+
+    def forward(self, x):
+        assert x.dim() == 4 
+        assert x.size(2) % self.stride[0] == 0 
+        assert x.size(3) % self.stride[1] == 0
+        N, C, H, W = x.size()
+        Cs = C * self.stride[0] * self.stride[1]
+        Hs = H / self.stride[0]
+        Ws = W / self.stride[1]
+        return x.view(N, C, Hs, self.stride[0], Ws, self.stride[1])\
+                .permute(0, 1, 3, 5, 2, 4)\
+                .contiguous()\
+                .view(N, Cs, Hs, Ws)
+
+
+class ChannelToSpace(StridingTransform):
+
+    def forward(self, x):
+        assert x.dim() == 4 
+        N, Cs, Hs, Ws = x.size()
+        assert Cs % (self.stride[0] * self.stride[1]) == 0
+        C = Cs / self.stride[0] / self.stride[1]
+        H = Hs * self.stride[0]
+        W = Ws * self.stride[1]
+        return x.view(N, C, self.stride[0], self.stride[1], Hs, Ws)\
+                .permute(0, 1, 4, 2, 5, 3)\
+                .contiguous()\
+                .view(N, C, H, W)
+
+
+class SplitTake(nn.Module):
+
+    def __init__(self, split_position):
+        nn.Module.__init__(self)
+        self.split_position = split_position
+
+    def forward(self, x):
+        return x[:, :self.split_position].contiguous()
+
+
+class GaussianSplit(nn.Module):
+
+    def __init__(self, split_position):
+        nn.Module.__init__(self)
+        self.split_position = split_position
+
+    def forward(self, input):
+        mean   = input[:, :self.split_position]
+        logvar = input[:, self.split_position:]
+        return (mean, logvar, logvar.exp())
+
+
+class SplitBatchNorm(nn.Module):
+
+    def __init__(self, num_part1, num_part2, spatial, affines=(True, True)):
+        nn.Module.__init__(self)
+        self.num_part1 = num_part1
+        self.num_part2 = num_part2
+        self.spatial = spatial
+        if spatial:
+            self.bn1 = nn.BatchNorm2d(num_part1, affine=affines[0])
+            self.bn2 = nn.BatchNorm2d(num_part2, affine=affines[1])
+        else:
+            self.bn1 = nn.BatchNorm1d(num_part1, affine=affines[0])
+            self.bn2 = nn.BatchNorm1d(num_part2, affine=affines[1])
+
+    def forward(self, input):
+        part1 = input[:, :self.num_part1].contiguous()
+        part2 = input[:, self.num_part1:].contiguous()
+        part1_bned = self.bn1(part1)
+        part2_bned = self.bn2(part2)
+        return torch.cat([part1_bned, part2_bned], 1)
+
+
+def batchnorm_set_halfbias(bn, bias=0.0):
+    old_forward = bn.forward
+    def new_forward(x):
+        bn.bias.data.chunk(2)[0].fill_(bias)
+        return old_forward(x)
+    bn.forward = new_forward
+
+
+"""
+==================================================================================================
+Scalar/Tensor Op
+==================================================================================================
+"""
 
 class ScalarOp(nn.Module):
     def __init__(self, init_val=1, learnable=True, apply_exp=False):
@@ -341,50 +460,6 @@ class AddTensor(TensorOp):
         return x + self.get_tensor(expand_as=x)
 
 
-class SplitTake(nn.Module):
-
-    def __init__(self, split_position):
-        nn.Module.__init__(self)
-        self.split_position = split_position
-
-    def forward(self, x):
-        return x[:, :self.split_position].contiguous()
-
-
-class GaussianSplit(nn.Module):
-
-    def __init__(self, split_position):
-        nn.Module.__init__(self)
-        self.split_position = split_position
-
-    def forward(self, input):
-        mean   = input[:, :self.split_position]
-        logvar = input[:, self.split_position:]
-        return (mean, logvar, logvar.exp())
-
-
-class SplitBatchNorm(nn.Module):
-
-    def __init__(self, num_part1, num_part2, spatial, affines=(True, True)):
-        nn.Module.__init__(self)
-        self.num_part1 = num_part1
-        self.num_part2 = num_part2
-        self.spatial = spatial
-        if spatial:
-            self.bn1 = nn.BatchNorm2d(num_part1, affine=affines[0])
-            self.bn2 = nn.BatchNorm2d(num_part2, affine=affines[1])
-        else:
-            self.bn1 = nn.BatchNorm1d(num_part1, affine=affines[0])
-            self.bn2 = nn.BatchNorm1d(num_part2, affine=affines[1])
-
-    def forward(self, input):
-        part1 = input[:, :self.num_part1].contiguous()
-        part2 = input[:, self.num_part1:].contiguous()
-        part1_bned = self.bn1(part1)
-        part2_bned = self.bn2(part2)
-        return torch.cat([part1_bned, part2_bned], 1)
-
-
 class PCALayer(nn.Module):
 
     def __init__(self, V, mean, direction):
@@ -413,6 +488,13 @@ class PCALayer(nn.Module):
         shifted = torch.mm(coded, Variable(self.V.t()))
         data    = shifted + Variable(self.mean.expand_as(shifted))
         return data
+
+
+"""
+==================================================================================================
+Miscellaneous
+==================================================================================================
+"""
 
 
 def init_weights(module):
@@ -549,3 +631,82 @@ def make_cnn_with_conf(model_conf,
     model.model_conf = model_conf # capture the model_conf for serialization
     init_weights(model)
     return model
+
+"""
+==================================================================================================
+Weight normalization
+Modified from https://gist.github.com/rtqichen/b22a9c6bfc4f36e605a7b3ac1ab4122f
+
+weight_norm: 
+    function to wrap a nn.Module instance, making it weight-normalized
+
+weight_norm_ctor: 
+    function to wrap a nn.Module class. Result can be called as a constructor. This constructor will produce
+    weight-normalized modules.
+
+wn_decorate: 
+    modifies module's forward function to include a normalizatio step
+==================================================================================================
+"""
+
+def wn_decorate(forward, module, name, name_g, name_v, fixed_norm=None):
+    @wraps(forward)
+    def decorated_forward(*args, **kwargs):
+        g = module.__getattr__(name_g)
+        v = module.__getattr__(name_v)
+        if fixed_norm is not None: # fix norm at a certain value
+            assert isinstance(fixed_norm, float), '{} is not float'.format(fixed_norm)
+            v.data.div_(v.data.norm()/fixed_norm) # bypass gradients
+            w = v * g.expand_as(v)
+        else:
+            w = v*(g/torch.norm(v)).expand_as(v)
+        module.__setattr__(name, w)
+        return forward(*args, **kwargs)
+    return decorated_forward
+
+
+def weight_norm(module, name='weight', fix_norm=False, init_prop=False):
+    param = module.__getattr__(name)
+
+    # construct g,v such that w = g/||v|| * v
+    g = torch.norm(param)
+    if fix_norm:
+        """
+        Without init_prop, we fix norm at 10
+        With init_prop, we fix norm at initial norm
+        """
+        if init_prop:
+            v = param # v at this point has norm=original norm
+            fixed_norm=g.data[0]
+            g.data.fill_(1) # g start at 1
+        else:
+            v = param/g.expand_as(param) * 10.0 # v at this point has norm=10.0
+            fixed_norm=10.0
+            g.data.div_(10.0) # g start at 0.1 * original norm
+    else:
+        v = param/g.expand_as(param) # v at this point has norm=1
+        fixed_norm = None
+        # g start at original norm
+    g = Parameter(g.data)
+    v = Parameter(v.data)
+    name_g = name + '_g'
+    name_v = name + '_v'
+
+    # remove w from parameter list
+    del module._parameters[name]
+
+    # add g and v as new parameters
+    module.register_parameter(name_g, g)
+    module.register_parameter(name_v, v)
+
+    # construct w every time before forward is called
+    module.forward = wn_decorate(module.forward, module, name, name_g, name_v, fixed_norm=fixed_norm)
+    return module
+
+
+def weight_norm_ctor(mod_type, name='weight', fix_norm=False, init_prop=False):
+    def init_func(*args, **kwargs):
+        mod = mod_type(*args, **kwargs)
+        return weight_norm(mod, name=name, fix_norm=fix_norm, init_prop=init_prop)
+    return init_func
+
