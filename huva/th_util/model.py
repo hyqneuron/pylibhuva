@@ -243,6 +243,45 @@ class SparsePointwiseConv2d(nn.Module):
         return '{}(in_channels={}, out_channels={})'.format(
                 self.__class__.__name__, self.in_channels, self.out_channels)
 
+"""
+==================================================================================================
+Internal batchnorm
+==================================================================================================
+"""
+
+class BatchNorm2d(nn.Module):
+
+    def __init__(self, num_channels, affine=True, momentum=0.1):
+        super(BatchNorm2d, self).__init__()
+        self.num_channels = num_channels
+        running_mean = torch.Tensor(1, num_channels, 1, 1)
+        running_var  = torch.Tensor(1, num_channels, 1, 1)
+        self.register_buffer('running_mean', running_mean)
+        self.register_buffer('running_var',  running_var)
+        if affine:
+            self.weight = Parameter(torch.Tensor(1, num_channels, 1, 1).fill_(1))
+            self.bias   = Parameter(torch.Tensor(1, num_channels, 1, 1).fill_(0))
+        self.affine = affine
+        self.momentum = momentum
+
+    def forward(self, input):
+        mean = input.data   .mean(0).view(1, input.size(1), -1).mean(2).unsqueeze(-1)
+        diff = input.data - mean.expand_as(input.data)
+        var  = (diff * diff).mean(0).view(1, input.size(1), -1).mean(2).unsqueeze(-1)
+        output = (input - Variable(mean.expand_as(input.data))) * Variable(var.rsqrt().expand_as(input.data))
+
+        self.running_mean = self.running_mean * self.momentum + mean * (1 - self.momentum)
+        self.running_var  = self.running_var  * self.momentum + var  * (1 - self.momentum)
+
+        if self.affine:
+            weight = self.weight.expand_as(input)
+            bias   = self.bias  .expand_as(input)
+            output = output * weight + bias
+        return output
+
+    def __repr__(self, additional=''):
+        return '{}(num_channels={})'.format(self.__class__.__name__, self.num_channels)
+
 
 """
 ==================================================================================================
@@ -285,6 +324,23 @@ class View(nn.Module):
 
     def __repr__(self):
         return "View({})".format(str(self.sizes))
+
+
+class Chunk(nn.Module):
+    """
+    chunk tensor into pieces
+    """
+
+    def __init__(self, num_chunks, dim):
+        nn.Module.__init__(self)
+        self.num_chunks = num_chunks
+        self.dim = dim
+
+    def forward(self, x):
+        return x.chunk(self.num_chunks, self.dim)
+
+    def __repr__(self):
+        return 'Chunk(num_chunks={}, dim={})'.format(self.num_chunks, self.dim)
 
 
 class StridingTransform(nn.Module):

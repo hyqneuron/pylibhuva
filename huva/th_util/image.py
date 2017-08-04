@@ -70,6 +70,7 @@ def clip_image(img):
     """ clip image to range [0, 255] """
     img[img > 255] = 255
     img[img < 0  ] = 0
+    return img
 
 
 def save_image(img, filename, normalize=True, create_folder=False):

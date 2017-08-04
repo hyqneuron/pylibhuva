@@ -81,7 +81,7 @@ class MonitoredAdam(torch.optim.Adam):
 
 class MonitoredRMSprop(torch.optim.RMSprop):
 
-    def step(self, closure=None, monitor_update=True):
+    def step(self, closure=None, update_monitor=True):
         """Performs a single optimization step.
 
         Arguments:
@@ -131,16 +131,16 @@ class MonitoredRMSprop(torch.optim.RMSprop):
                     buf = state['momentum_buffer']
                     buf.mul_(group['momentum']).addcdiv_(grad, avg)
                     p.data.add_(-group['lr'], buf)
-                    if monitor_update:
+                    if update_monitor:
                         self.update_sqr += (group['lr'] * buf.norm())**2
                 else:
                     #p.data.addcdiv_(-group['lr'], grad, avg)
                     normed_grad = grad.div(avg)
                     p.data.add_(-group['lr'], normed_grad)
-                    if monitor_update:
+                    if update_monitor:
                         self.update_sqr += (group['lr'] * normed_grad.norm())**2
 
-        self.update_norm = math.sqrt(self.update_sqr+1e-8) * group['lr']
+        self.update_norm = math.sqrt(self.update_sqr+1e-8)
         return loss
 
 

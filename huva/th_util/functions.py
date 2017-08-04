@@ -7,6 +7,18 @@ from .cuda import cpu_spatial_gather_hwc,   cuda_spatial_gather_hwc,            
 from .base import new_as
 
 
+class NegateGradient(Function):
+    """ 
+    this function negates gradient without changing forward pass, useful in minimax context
+    """
+
+    def forward(self, input):
+        return input
+
+    def backward(self, grad_output):
+        return - grad_output
+
+
 class SpatialGatherHWC(Function):
 
     def forward(self, hwc, indices):

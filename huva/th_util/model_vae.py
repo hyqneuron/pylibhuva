@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from collections import namedtuple
+from collections import namedtuple, OrderedDict
 from .model import Model, extract_float
 
 """
@@ -26,7 +26,19 @@ def extract_mean(P):
     return P[0] if type(P) in [tuple, list] else P
 
 
+def extract_topmost_code(state):
+    if type(state) in [list, tuple]: 
+        state = state[-1]
+    assert isinstance(state, VAEState)
+    return state.code
+
+
+def cut_gradient(v):
+    return Variable(v.data)
+
+
 def sum_all(value):
+    # sum value to (N,1)
     return value.view(value.size(0), -1).sum(1)
 
 
@@ -173,52 +185,81 @@ class AsymmetricVAE(Model):
             return getattr(self.network, name)
 
 
+class CompositeModel(Model):
+
+    def __init__(self, submodels):
+        super(CompositeModel, self).__init__()
+        assert isinstance(submodels, OrderedDict)
+        self.submodels = submodels
+
+    def forward(self, x):
+        state = {}
+        state['x'] = x
+        for mod_name, (input_names, submodel) in self.submodels:
+            assert type(input_names) is list
+            inputs = [state[name] for name in input_names]
+            state[mod_name] = submodel(*inputs)
+        return state
+
+    def get_losses(self, state, loss_transform=None):
+        loss = 0
+        losses = {}
+        for mod_name, (input_names, submodel) in self.submodels:
+            losses[mod_name] = submodel.get_losses(state[mod_name], loss_transform=loss_transform)
+            loss += losses[mod_name][0]
+        return loss, losses
+
+
 class SymmetricVAE(Model):
     
-    def __init__(self, network, wake_transformer=mt, sleep_transformer=mt, sleep=True):
+    def __init__(self, 
+            network, 
+            wake_transformer=mt, sleep_transformer=mt,
+            wake=True, sleep=True,
+            ):
         super(SymmetricVAE, self).__init__()
         self.wake_network  = network
         self.sleep_network = network.invert() # invert encoder-decoder and order of stages
         self.wake_transformer  = wake_transformer
         self.sleep_transformer = sleep_transformer
+        self.wake  = wake
         self.sleep = sleep
 
     def forward(self, x, z=None):
-        state_wake  = self.wake_network(x)
-        if not self.sleep:
-            return state_wake, None
+        state_wake  = self.wake_network(x) if self.wake else None
         if z is None: 
             z = self.wake_network.sample_prior(state=state_wake)
-        state_sleep = self.sleep_network(z)
+        state_sleep = self.sleep_network(z) if self.sleep else None
         return state_wake, state_sleep
 
     def get_losses(self, state, label, wake_transform=None, sleep_transform=None):
-        if not self.sleep:
-            state_wake, _ = state
+        state_wake, state_sleep = state
+        loss = 0
+        # wake
+        if self.wake:
             if wake_transform  is None: wake_transform  = self.wake_transformer (self, state_wake)
             losses_wake  = self.wake_network. get_losses(state_wake,  wake_transform,  True)
-            return losses_wake
-        state_wake, state_sleep = state
-        if wake_transform  is None: wake_transform  = self.wake_transformer (self, state_wake)
-        if sleep_transform is None: sleep_transform = self.sleep_transformer(self, state_sleep)
-        losses_wake  = self.wake_network. get_losses(state_wake,  wake_transform,  True)
-        losses_sleep = self.sleep_network.get_losses(state_sleep, sleep_transform, False)
-        loss = losses_wake[0] + losses_sleep[0] * 0.5
+            loss += losses_wake[0]
+        else: 
+            losses_wake = None
+        # sleep
+        if self.sleep:
+            if sleep_transform is None: sleep_transform = self.sleep_transformer(self, state_sleep)
+            losses_sleep = self.sleep_network.get_losses(state_sleep, sleep_transform, False)
+            loss += losses_sleep[0]
+        else:
+            losses_sleep = None
         return loss, losses_wake, losses_sleep
 
     def report_losses(self, losses, include_all=False):
-        if self.sleep:
-            loss, losses_wake, losses_sleep = losses
-            if not include_all:
-                return extract_float([loss, losses_wake[0], losses_sleep[0]])
-            else:
-                return extract_float([loss, losses_wake, losses_sleep])
+        loss, losses_wake, losses_sleep, losses_dics = losses
+        sublist = [l for l in losses[1:] if l is not None]
+        if include_all:
+            return extract_float([loss] + sublist)
         else:
-            losses_wake = losses
-            if not include_all:
-                return extract_float(losses_wake[:3])
-            else:
-                return extract_float(losses_wake)
+            return extract_float([loss] + [ l[0] if type(l) in [list, tuple] else 
+                                            l 
+                                            for l in sublist ] )
 
     def __getattr__(self, name):
         try:
