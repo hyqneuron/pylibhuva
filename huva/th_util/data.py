@@ -240,14 +240,16 @@ def make_data_cifar10(batch_size, train_threads=1, test_threads=1, size=32):
     loader_test  = DataLoader(dataset_test, batch_size=batch_size, shuffle=False,num_workers=test_threads,  pin_memory=True)
     return (dataset_train, loader_train), (dataset_test, loader_test)
 
+
 def make_data_lsun_bedroom(batch_size, shuffle=True, tanh=True, num_workers=6):
+    t = torchvision.transforms
     lsun_transforms = [
-        transforms.Scale(64),
-        transforms.CenterCrop(64),
-        transforms.ToTensor(),
-    ]+ [transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))] if tanh else []
+        t.Scale(64),
+        t.CenterCrop(64),
+        t.ToTensor(),
+    ]+ [t.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))] if tanh else []
     dataset = torchvision.datasets.LSUN(db_path=local_config.path_lsun_bedroom, classes=['bedroom_train'],
-                        transform=transforms.Compose(lsun_transforms))
+                        transform=t.Compose(lsun_transforms))
     loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
     return dataset, loader
 
