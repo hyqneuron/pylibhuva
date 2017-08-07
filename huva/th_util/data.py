@@ -223,15 +223,15 @@ def make_data_frey_face(batch_size, normalize=True, spatial=False, shuffle=True,
     return dataset, loader
 
 
-def make_data_cifar10(batch_size, train_threads=1, test_threads=1, size=32):
+def make_data_cifar10(batch_size, train_threads=1, test_threads=1, size=32, normalize=True, extra_transforms=[]):
     def make_dataset(train):
         transforms = [torchvision.transforms.RandomHorizontalFlip()] if train else [] 
         if size != 32:
             transforms += [torchvision.transforms.Scale(size=size)]
-        transforms += [
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Normalize(mean=[0.469, 0.481, 0.451], std=[0.239,0.245,0.272])
-        ]
+        transforms += [ torchvision.transforms.ToTensor() ]
+        if normalize:
+            transforms += [ torchvision.transforms.Normalize(mean=[0.469, 0.481, 0.451], std=[0.239,0.245,0.272]) ]
+        transforms += extra_transforms
         return torchvision.datasets.CIFAR10( local_config.torchvision_path_cifar10, 
                 train=train, transform=torchvision.transforms.Compose(transforms), download=True)
     dataset_train = make_dataset(True)
