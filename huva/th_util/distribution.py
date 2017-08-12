@@ -132,7 +132,8 @@ class Laplacian(Distribution):
         return (mean, logstd, logstd.exp())
 
     def logP(self, x, P):
-        return - logstd - (z - mean).abs() / std + math.log(2)
+        mean, logstd, std = P
+        return - logstd - (x - mean).abs() / std + math.log(2)
 
     def prior_P(self, template):
         mean, logstd, std = new_as(template.data), new_as(template.data), new_as(template.data)

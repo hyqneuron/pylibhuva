@@ -283,6 +283,27 @@ class BatchNorm2d(nn.Module):
         return '{}(num_channels={})'.format(self.__class__.__name__, self.num_channels)
 
 
+class LayerNorm2d(nn.Module):
+
+    def __init__(self, num_channels):
+        super(LayerNorm2d, self).__init__()
+        self.num_channels = num_channels
+        self.weight = Parameter(torch.Tensor(1, num_channels, 1, 1).fill_(1))
+        self.bias   = Parameter(torch.Tensor(1, num_channels, 1, 1).fill_(0))
+
+    def forward(self, input):
+        mean = input.view(input.size(0), -1).mean(1).unsqueeze(-1).unsqueeze(-1).expand_as(input).detach()
+        std  = input.view(input.size(0), -1).std(1) .unsqueeze(-1).unsqueeze(-1).expand_as(input).detach()
+        weight = self.weight.expand_as(input)
+        bias   = self.bias  .expand_as(input)
+        output = (input - mean) / (std+1e-5)
+        output = weight * output + bias
+        return output
+
+    def __repr__(self, additional=''):
+        return '{}(num_channels={})'.format(self.__class__.__name__, self.num_channels)
+
+
 """
 ==================================================================================================
 Shape-changing
