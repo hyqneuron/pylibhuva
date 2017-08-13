@@ -125,6 +125,33 @@ class Gaussian(Distribution):
         return mean + noise * std
 
 
+class Exponential(Distribution):
+
+    def __init__(self, eps=1e-2):
+        super(Exponential, self).__init__()
+        assert eps > 0
+        self.eps = eps
+
+    def forward(self, x):
+        std = x.clamp(self.eps, 1e10) # std is non-negative, we only clamp to eps to prevent numerical issues
+        return std # std is also mean
+
+    def logP(self, x, P):
+        std = P
+        # this loss has a flaw: when one side's std is cut off, and the other side is positive, (x/std) can be very big
+        # because std is very small. To overcome this flaw, we need the cutoff line to be big, like 0.1
+        return -std.log() - (x / std)
+
+    def prior_P(self, template):
+        std = new_as(template.data)
+        std.fill_(1)
+        return std
+
+    def sample(self, P):
+        std = P
+        return std * Variable(new_as(std.data).exponential_())
+
+
 class Laplacian(Distribution):
 
     def forward(self, x):

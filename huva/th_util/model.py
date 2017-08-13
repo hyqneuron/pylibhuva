@@ -341,7 +341,7 @@ class View(nn.Module):
         self.sizes = sizes
 
     def forward(self, x):
-        return x.view(x.size(0), *self.sizes)
+        return x.contiguous().view(x.size(0), *self.sizes)
 
     def __repr__(self):
         return "View({})".format(str(self.sizes))
