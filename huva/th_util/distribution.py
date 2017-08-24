@@ -226,7 +226,6 @@ class BinaryContinuous(Distribution):
         bina_distro = self.bernoulli(mean)
         cont_distro = self.continuous(x)
         mean = extract_mean(bina_distro) * extract_mean(cont_distro) # in cae hvae.pass_sample=False
-        # bina_distro = Variable(new_as(bina_distro.data).fill_(1)) # FIXME debugging
         return (mean, bina_distro, cont_distro)
 
     def logP(self, x, P):
@@ -235,7 +234,6 @@ class BinaryContinuous(Distribution):
         m = (x != 0).float()
         bina_logP =     self.bernoulli .logP(m, bina_distro)
         cont_logP = m * self.continuous.logP(x, cont_distro)
-        # FIXME do NaN-removal to guarantee numerical stability
         return bina_logP + cont_logP
 
     def KLD(self, z, Q, P):
@@ -245,8 +243,6 @@ class BinaryContinuous(Distribution):
         m = (z != 0).float()
         bina_KLD =          self.bernoulli.KLD (m, bina_Q, bina_P)
         cont_KLD = bina_Q * self.continuous.KLD(z, cont_Q, cont_P)
-        # FIXME do NaN-removal to guarantee numerical stability
-        # return cont_KLD # bina_KLD + cont_KLD FIXME debugging
         return bina_KLD + cont_KLD 
 
     def prior_P(self, template):

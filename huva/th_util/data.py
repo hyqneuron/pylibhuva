@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader, Dataset, TensorDataset
 from .. import local_config
 import os
 import math
+import numpy as np
 
 
 class TensorDataset(Dataset):
@@ -100,6 +101,43 @@ class TensorLoader(object):
 
     def __len__(self):
         return int(math.ceil(len(self.dataset) / float(self.batch_size)))
+
+
+class ToTensor(object):
+    """
+    Differs from torchvision.transforms.ToTensor in that png images are supported
+    """
+
+    def __call__(self, pic):
+        if isinstance(pic, np.ndarray):
+            # handle numpy array
+            img = torch.from_numpy(pic.transpose((2, 0, 1)))
+            # backard compability
+            return img.float().div(255)
+        # handle PIL Image
+        if pic.mode == 'I':
+            img = torch.from_numpy(np.array(pic, np.int32, copy=False))
+        elif pic.mode == 'I;16':
+            img = torch.from_numpy(np.array(pic, np.int16, copy=False))
+        elif pic.mode == '1':
+            img = torch.from_numpy(np.array(pic, np.float32))
+        else:
+            img = torch.ByteTensor(torch.ByteStorage.from_buffer(pic.tobytes()))
+        # PIL image mode: 1, L, P, I, F, RGB, YCbCr, RGBA, CMYK
+        if pic.mode == 'YCbCr':
+            nchannel = 3
+        elif pic.mode == 'I;16':
+            nchannel = 1
+        else:
+            nchannel = len(pic.mode)
+        img = img.view(pic.size[1], pic.size[0], nchannel)
+        # put it from HWC to CHW format
+        # yikes, this transpose takes 80% of the loading time/CPU
+        img = img.transpose(0, 1).transpose(0, 2).contiguous()
+        if isinstance(img, torch.ByteTensor):
+            return img.float().div(255)
+        else:
+            return img
 
 
 def make_data_mnist(batch_size, normalize=True, spatial=False, gpu=True, shuffle_train=True, shuffle_test=False):
