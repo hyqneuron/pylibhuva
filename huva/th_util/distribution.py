@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
+from torch.nn import Parameter
 from .base import *
 from .math_ops import *
 
@@ -133,14 +134,26 @@ class Exponential(Distribution):
         self.eps = eps
 
     def forward(self, x):
-        std = x.clamp(self.eps, 1e10) # std is non-negative, we only clamp to eps to prevent numerical issues
+        std = x.clamp(self.eps, 1e100) # std is non-negative, we only clamp to eps to prevent numerical issues
         return std # std is also mean
 
     def logP(self, x, P):
         std = P
         # this loss has a flaw: when one side's std is cut off, and the other side is positive, (x/std) can be very big
         # because std is very small. To overcome this flaw, we need the cutoff line to be big, like 0.1
-        return -std.log() - (x / std)
+        result = -std.log() - (x / std)
+        assert (result==result).data.all(), 'NaN in exponential loss ' # FIXME DEBUG assert
+        """
+        print '==============================='
+        print x[0][0]
+        print '==============================='
+        print std[0][0]
+        """
+        import os
+        if result.view(result.size(0), -1).sum(1).mean().data[0] < -10000:
+            os.environ['fucked']='True'
+            #print 'no, just {}'.format(result.view(result.size(0), -1).sum(1).mean().data[0])
+        return result
 
     def prior_P(self, template):
         std = new_as(template.data)
@@ -149,7 +162,7 @@ class Exponential(Distribution):
 
     def sample(self, P):
         std = P
-        return std * Variable(new_as(std.data).exponential_())
+        return std #std * Variable(new_as(std.data).exponential_())
 
 
 class Laplacian(Distribution):
@@ -158,9 +171,16 @@ class Laplacian(Distribution):
         mean, logstd = x.chunk(2, dim=1)
         return (mean, logstd, logstd.exp())
 
-    def logP(self, x, P):
+    def logP(self, x, P, eps=1e-4):
         mean, logstd, std = P
-        return - logstd - (x - mean).abs() / std + math.log(2)
+        result = - logstd - (x - mean).abs() / (std+eps) + math.log(2)
+        # FIXME DEBUG assert
+        assert (mean==mean).data.all()
+        assert (x==x).data.all()
+        assert (logstd==logstd).data.all()
+        assert (std==std).data.all()
+        assert (result==result).data.all(), 'NaN in Laplacian loss'
+        return result
 
     def prior_P(self, template):
         mean, logstd, std = new_as(template.data), new_as(template.data), new_as(template.data)
@@ -171,7 +191,7 @@ class Laplacian(Distribution):
 
     def sample(self, P):
         mean, logstd, std = P
-        return mean + std * sample_unit_laplacian(std.data)
+        return mean + std * Variable(sample_unit_laplacian(std.data))
 
 
 class Bernoulli(Distribution):
@@ -189,8 +209,8 @@ class Bernoulli(Distribution):
             P = F.sigmoid(P)
         return P
 
-    def logP(self, x, P):
-        return x * P.log() + (1-x) * (1-P).log()
+    def logP(self, x, P, eps=1e-8):
+        return x * (P+eps).log() + (1-x) * (1-P+eps).log()
 
     def KLD(self, z, Q, P, eps=1e-8):
         """ closed-form KLD """
@@ -211,7 +231,7 @@ class Bernoulli(Distribution):
 
 class BinaryContinuous(Distribution):
 
-    def __init__(self, bernoulli, continuous):
+    def __init__(self, bernoulli, continuous, mult_init=None):
         """
         bernoulli: Bernoulli instance
         continuous: a continuous Distribution. It has to be numerically stable when logP or KLD is computed with x=0,
@@ -220,16 +240,19 @@ class BinaryContinuous(Distribution):
         super(BinaryContinuous, self).__init__()
         self.bernoulli  = bernoulli
         self.continuous = continuous
+        self.use_multiplier = mult_init is not None
+        if self.use_multiplier:
+            self.mean_multiplier = Parameter(mult_init)
 
     def forward(self, x):
         mean, logxxx = x.chunk(2, dim=1)
-        bina_distro = self.bernoulli(mean)
+        input_to_bernouli = mean * self.mean_multiplier if self.use_multiplier else mean
+        bina_distro = self.bernoulli(input_to_bernouli)
         cont_distro = self.continuous(x)
         mean = extract_mean(bina_distro) * extract_mean(cont_distro) # in cae hvae.pass_sample=False
         return (mean, bina_distro, cont_distro)
 
     def logP(self, x, P):
-        assert False, 'do not call this yet'
         mean, bina_distro, cont_distro = P
         m = (x != 0).float()
         bina_logP =     self.bernoulli .logP(m, bina_distro)
@@ -241,8 +264,8 @@ class BinaryContinuous(Distribution):
         mean_Q, bina_Q, cont_Q = Q
         mean_P, bina_P, cont_P = P
         m = (z != 0).float()
-        bina_KLD =          self.bernoulli.KLD (m, bina_Q, bina_P)
-        cont_KLD = bina_Q * self.continuous.KLD(z, cont_Q, cont_P)
+        bina_KLD = self.bernoulli.KLD (m, bina_Q, bina_P)           # binary     KLD
+        cont_KLD = self.continuous.KLD(z, cont_Q, cont_P) * bina_Q  # continuous KLD multiplied by probability of activation
         return bina_KLD + cont_KLD 
 
     def prior_P(self, template):
