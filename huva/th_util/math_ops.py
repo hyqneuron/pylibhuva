@@ -101,19 +101,27 @@ Gaussian costs for VAEs
 ===============================================================================
 """
 
-def kld_for_gaussians((mean1, logvar1, var1), (mean2, logvar2, var2), do_sum=False):
+def kld_for_gaussians((mean1, logvar1, var1), (mean2, logvar2, var2), do_sum=False, nat_grad=False):
     """
     Compute the KL-divergence between two diagonal Gaussians.
 
     arguments: (q_mean, q_logvar, q_var), (p_mean, p_logvar, p_var) 
     We require var in addition to logvar, because var is computed in the sampling pass, so we don't have to compute it
     again as logvar.exp()
+        nat_grad: bool, use natural gradient
 
     See https://stats.stackexchange.com/a/7443/125143 for derivation
     """
     diff = mean1 - mean2
+    squared = diff * diff
     term1 = logvar2 - logvar1
-    term2 = (var1 + (diff*diff)) / (var2+1e-8 )
+    term2 = (var1 + squared) / (var2+1e-8 )
+    if nat_grad:
+        term2_nat1 = var1 / (var2 + 1e-8)
+        term2_nat1 = term2_nat1 - term2_nat1.detach()   # ensure 0-value
+        term2_nat2 = squared    - squared.detach()      # ensure 0-value
+        term2_natural = term2_nat1 + term2_nat2         # 0-value, but carries gradient
+        term2 = term2.detach() + term2_natural          # first term provides value, second provides gradient
     result = (term1 + term2 - 1) * 0.5
     return result.sum() if do_sum else result
 
@@ -128,7 +136,7 @@ def kld_for_unit_gaussian((mean, logvar, var), do_sum=False):
     return result.sum() if do_sum else result
 
 
-def nl_for_gaussian(x, (mean, logvar, var), do_sum=False):
+def nl_for_gaussian(x, (mean, logvar, var), do_sum=False, nat_grad=False):
     """
     Compute the negative logarithm of P(x|z) under the Gaussian distribution
     P(x|z) = [1/(2pi*var)**0.5] * exp((x-mean)**2 / (2*var))
@@ -136,8 +144,24 @@ def nl_for_gaussian(x, (mean, logvar, var), do_sum=False):
     -logP(x|z) = - ( -0.5*(log(2pi)+logvar) - 0.5*(x-mean)**2 / var)
                = 0.5 * ( log(2pi) + logvar + (x-mean)**2/var )
     """
+    squared = (x-mean)**2
     term1 = math.log(2*math.pi) + logvar
-    term2 = (x-mean)**2 / (var + 1e-10)
+    term2 = squared / (var + 1e-10)
+    if nat_grad:
+        # in computing a loss that gives rise to natural gradient, we use two terms
+        # first term provides the correct value of the log, but does not provide gradient (term2.detach())
+        # the second term equals 0, but in the backward pass provides the natural gradient
+        # natural gradient derivation follows http://andymiller.github.io/2016/10/02/natural_gradient_bbvi.html
+        # two differences in natural gradient from normal gradient:
+        # 1. mean's grad no longer divided by variance
+        # 2. logvar's grad divided by 2
+        term2_nat_mean = squared                                    # mean grad has no division by var
+        term2_nat_logv = 0.5 * squared.detach() / (var + 1e-10)     # logvar grad divide by 2
+        term2_nat_mean = term2_nat_mean - term2_nat_mean.detach()   # 0-value
+        term2_nat_logv = term2_nat_logv - term2_nat_logv.detach()   # 0-value
+        term2_natural  = term2_nat_mean + term2_nat_logv
+        term2 = term2.detach() + term2_natural      # first term provides value, second provides gradient
+        # this is actually the wrong implementation because it messes up gradient to logvar
     result = 0.5 * (term1+term2)
     return result.sum() if do_sum else result
 

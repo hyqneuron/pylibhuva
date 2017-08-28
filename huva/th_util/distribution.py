@@ -96,20 +96,28 @@ Gaussian, Laplacian, Bernoulli, BinaryContinuous, AltGaussian
 
 class Gaussian(Distribution):
 
+    def __init__(self, natural_gradient=False):
+        super(Distribution, self).__init__()
+        self.natural_gradient = natural_gradient
+
     def forward(self, x):
         mean, logvar = x.chunk(2, dim=1)
         return (mean, logvar, logvar.exp())
 
     def logP(self, x, P):
-        return -nl_for_gaussian(x, P)
+        return -nl_for_gaussian(x, P, nat_grad=self.natural_gradient)
 
     def KLD(self, z, Q, P):
         """ closed-form KLD """
-        KLD = kld_for_gaussians(Q, P)
+        KLD = kld_for_gaussians(Q, P, nat_grad=self.natural_gradient)
+        """
+        if self.natural_gradient:
+            KLD= nl_for_gaussian(z, Q, nat_grad=True) - nl_for_gaussian(z, P, nat_grad=True)
+        """
         return KLD
 
     def NLL(self, x, P):
-        NLL = nl_for_gaussian(x, P)
+        NLL = nl_for_gaussian(x, P, nat_grad=self.natural_gradient)
         return NLL
 
     def prior_P(self, template):
