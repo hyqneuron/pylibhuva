@@ -179,15 +179,9 @@ class Laplacian(Distribution):
         mean, logstd = x.chunk(2, dim=1)
         return (mean, logstd, logstd.exp())
 
-    def logP(self, x, P, eps=1e-4):
+    def logP(self, x, P, eps=1e-6):
         mean, logstd, std = P
-        result = - logstd - (x - mean).abs() / (std+eps) + math.log(2)
-        # FIXME DEBUG assert
-        assert (mean==mean).data.all()
-        assert (x==x).data.all()
-        assert (logstd==logstd).data.all()
-        assert (std==std).data.all()
-        assert (result==result).data.all(), 'NaN in Laplacian loss'
+        result = - logstd - (x - mean).abs() / (std+eps) - math.log(2)
         return result
 
     def prior_P(self, template):
@@ -195,11 +189,13 @@ class Laplacian(Distribution):
         mean.fill_(0)
         logstd.fill_(0)
         std.fill_(1)
-        return Variable(mean), Variable(logvar), Variable(var)
+        return Variable(mean), Variable(logstd), Variable(std)
 
-    def sample(self, P):
+    def sample(self, P, bloody=False):
         mean, logstd, std = P
-        return mean + std * Variable(sample_unit_laplacian(std.data))
+        unit_sample = sample_unit_laplacian(std.data)
+        result = mean + std * Variable(unit_sample)
+        return result
 
 
 class Bernoulli(Distribution):

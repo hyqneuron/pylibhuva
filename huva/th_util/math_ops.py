@@ -199,7 +199,9 @@ def nl_for_laplacian(z, (mean, logstd, std), do_sum=False):
 def sample_unit_laplacian(template):
     sign_switch       = new_as(template).fill_(0.5).bernoulli_() * 2 - 1
     exponential_noise = new_as(template).exponential_()
-    return (0.5 * exponential_noise) * sign_switch
+    inf_mask = exponential_noise > 40
+    exponential_noise.masked_fill_(inf_mask, 0) # remove infinity values coming from a PyTorch bug
+    return exponential_noise * sign_switch
 
 
 
