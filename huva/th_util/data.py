@@ -280,7 +280,10 @@ def make_data_cifar10(batch_size, train_threads=1, test_threads=1, size=32, norm
     return (dataset_train, loader_train), (dataset_test, loader_test)
 
 
-def make_data_lsun_bedroom(batch_size, shuffle=True, tanh=True, num_workers=6):
+def make_data_lsun_bedroom(batch_size, shuffle=False, tanh=True, num_workers=4):
+    """
+    Shuffling makes it quite slow, it seems. So we default to no shuffling
+    """
     t = torchvision.transforms
     lsun_transforms = [
         t.Scale(64),

@@ -8,9 +8,11 @@ from .model_ccvae import *  # ccvae modules
 from .model_vae import *    # asymmetric/symmetric vae modules
 
 from .training import *     # training utilities
-from .monitor import *      # monitor gradient descent
+from .optimizers import *   # monitor gradient descent
 from .nn_stats import *     # nn statistics
 from .visualize import *    # guided backpropagation visualization
+
+from .functions import NegateGradient
 
 from .tests import *
 

@@ -9,8 +9,26 @@ Monitored optimizers:
 - MonitoredSGD
 """
 
+class SimplifiedOptimizer():
 
-class MonitoredAdam(torch.optim.Adam):
+    def loss_step(self, loss, *args, **kwargs):
+        self.zero_grad()
+        loss.backward()
+        self.step(*args, **kwargs)
+
+
+class DualOptimizer:
+
+    def __init__(self, opt1, opt2):
+        self.opt1 = opt1
+        self.opt2 = opt2
+
+    def loss_step(self, loss, *args, **kwargs):
+        self.opt1.loss_step(loss[0], *args, **kwargs)
+        self.opt2.loss_step(loss[1], *args, **kwargs)
+
+
+class MonitoredAdam(torch.optim.Adam, SimplifiedOptimizer):
 
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
                  weight_decay=0, separate_decay=False):
@@ -79,7 +97,7 @@ class MonitoredAdam(torch.optim.Adam):
         return loss
 
 
-class MonitoredRMSprop(torch.optim.RMSprop):
+class MonitoredRMSprop(torch.optim.RMSprop, SimplifiedOptimizer):
 
     def step(self, closure=None, update_monitor=True):
         """Performs a single optimization step.
@@ -162,7 +180,7 @@ class MonitoredNorms(object):
         self.u_norm = None
 
 
-class MonitoredSGD(torch.optim.SGD):
+class MonitoredSGD(torch.optim.SGD, SimplifiedOptimizer):
     """
     MonitoredSGD adds several features to torch.optim.SGD:
     - tracks size of total update in self.update_norm
@@ -257,7 +275,7 @@ class MonitoredSGD(torch.optim.SGD):
         return loss
 
 
-class MonitoredAdagrad(torch.optim.Adagrad):
+class MonitoredAdagrad(torch.optim.Adagrad, SimplifiedOptimizer):
 
     def step(self, closure=None, update_monitor=False):
         """Performs a single optimization step.
@@ -319,7 +337,7 @@ class MonitoredAdagrad(torch.optim.Adagrad):
         return loss
 
 
-class MonitoredSpecificSGD(torch.optim.SGD):
+class MonitoredSpecificSGD(torch.optim.SGD, SimplifiedOptimizer):
     """
     MonitoredSGD adds several features to torch.optim.SGD:
     - tracks size of total update in self.update_norm
