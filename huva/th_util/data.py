@@ -5,6 +5,7 @@ from .. import local_config
 import os
 import math
 import numpy as np
+from PIL import Image
 
 
 class TensorDataset(Dataset):
@@ -290,4 +291,155 @@ def make_data_lsun_bedroom(batch_size, shuffle=True, tanh=True, num_workers=6):
                         transform=t.Compose(lsun_transforms))
     loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
     return dataset, loader
+
+
+def organize_mini_imagenet():
+    """
+    read mini imagenet csv files, one for each set (train, val, test)
+    for each set, organize files into [(foldername, filename)]
+        foldername indicates category, and is relative to a root folder
+        filename is without prefix
+    """
+    folder = local_config.miniimagenet_csv_folder
+    root_folder = local_config.miniimagenet_file_folder
+    set_files = {'train':None, 'test':None, 'val':None}
+    set_rootfolder = {name:root_folder for name in set_files}
+    for name in set_files:
+        filename = os.path.join(folder, name+'.csv')
+        lines = open(filename).readlines()[1:]
+        lines = [l.strip().split(',') for l in lines]
+        def fix_name(pair):
+            filename, foldername = pair
+            filename = foldername+'_'+filename[len(foldername):].strip('0')
+            filename = filename.replace('.jpg', '.JPEG')
+            return foldername, filename
+        files = [fix_name(l) for l in lines]
+        set_files[name] = files
+    return set_files, set_rootfolder
+
+
+def organize_omniglot():
+    """
+    read omniglot folder, extract 2 sets: (train, test)
+    for each set, organize files into [(foldername, filename)]
+        foldername indicates category, and is relative to a root folder
+        filename is without prefix
+    """
+    folder = local_config.omniglot_file_folder
+    set_files  = {'train':None, 'test':None}
+    set_rootfolder = {
+            'train': os.path.join(folder, 'images_background'),
+            'test':  os.path.join(folder, 'images_evaluation'),
+    }
+    for name, rootfolder in set_rootfolder.iteritems():
+        # scan each alphabet
+        files = []
+        for dirpath, childdirs, childfiles in os.walk(rootfolder):
+            png_files = [f for f in childfiles if f.endswith('.png')]
+            if len(png_files) > 0:
+                files += [(dirpath.strip(rootfolder), f) for f in png_files]
+        set_files[name] = files
+    return set_files, set_rootfolder
+
+
+class FolderDataset(Dataset):
+
+    def __init__(self, root_folder, files, transform=None):
+        self.root_folder = root_folder
+        self.files = files
+        self.transform = transform
+        # compute number of classes of this dataset
+        foldernames = set([f[0] for f in files])
+        self.num_classes = len(foldernames)
+        self.classes = sorted(list(foldernames))
+
+    def get_item_full(self, index):
+        foldername, filename = self.files[index]
+        class_index = self.classes.index(foldername)
+        filepath = os.path.join(self.root_folder, foldername, filename)
+        image = Image.open(filepath)
+        if self.transform is not None:
+            image = self.transform(image)
+        return image, class_index, foldername
+
+    def __getitem__(self, index):
+        return self.get_item_full(index)[:2]
+
+    def __len__(self):
+        return len(self.files)
+
+
+class MultiFolderDataset(Dataset):
+    """
+    Merges multiple datasets into a single one. Does not perform transform on its own
+    """
+
+    def __init__(self, folder_datasets):
+        self.folder_datasets = folder_datasets
+        count = 0
+        ends = []
+        classes = set(sum([d.classes for d in folder_datasets], []))
+        for d in folder_datasets:
+            count += len(d)
+            ends.append(count)
+        self.classes = list(classes)
+        self.num_classes = len(classes)
+        self.count = count
+        self.ends = ends
+
+    def __len__(self):
+        return self.count
+
+    def __getitem__(self, index):
+        prev_end = 0
+        for d, end_index in zip(self.folder_datasets, self.ends):
+            if index < end_index:
+                image, _, classname = d.get_item_full(index - prev_end)
+                class_index = self.classes.index(classname)
+                return image, class_index
+            else:
+                prev_end = end_index
+        assert index < self.count
+
+
+
+def make_data_x(set_files, set_rootfolder, batch_size, image_size=64, normalization=None, num_workers=2, transform=None):
+    # code shared by make_data_mini_imagenet and make_data_omniglot
+    if transform is None:
+        trans = [
+            torchvision.transforms.Scale(image_size),
+            torchvision.transforms.CenterCrop(image_size),
+            ToTensor(),
+        ]
+        if normalization is not None:
+            trans.append(torchvision.transforms.Normalize(*normalization))
+        transform = torchvision.transforms.Compose(trans)
+    dataset_train = FolderDataset(set_rootfolder['train'], set_files['train'], transform)
+    dataset_test  = FolderDataset(set_rootfolder['test'],  set_files['test'],  transform)
+    loader_train = DataLoader(dataset_train,batch_size=batch_size, shuffle=True,  num_workers=num_workers, pin_memory=True)
+    loader_test  = DataLoader(dataset_test, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    return (dataset_train, loader_train), (dataset_test, loader_test)
+
+
+def make_data_mini_imagenet(batch_size, image_size=64, normalize='01', num_workers=2, transform=None):
+    set_files, set_rootfolder = organize_mini_imagenet()
+    normalization = (None if normalize is None else 
+                    ([0.3, 0.3, 0.3],[0.3, 0.3, 0.3]) if normalize=='01' else   # 0-mean, 1-variance
+                    ([0.5, 0.5, 0.5],[0.5, 0.5, 0.5]))                          # tanh range
+    return make_data_x(set_files, set_rootfolder, batch_size, image_size, normalization, num_workers, transform)
+
+
+def make_data_omniglot(batch_size, image_size=64, normalize='01', num_workers=2, transform=None):
+    set_files, set_rootfolder = organize_omniglot()
+    normalization = (None if normalize is None else 
+                    ([0.9220],[0.2680]) if normalize=='01' else     # 0-mean, 1-variance
+                    ([0.5],[0.5]))                                  # tanh range
+    return make_data_x(set_files, set_rootfolder, batch_size, image_size, normalization, num_workers, transform)
+
+def make_data_omniglot_full(batch_size, image_size=64, normalize='01', num_workers=2, transform=None):
+    (d,l), (dt,lt) = make_data_omniglot(batch_size, image_size, normalize, 1, transform)
+    d = MultiFolderDataset([d,dt])
+    l = DataLoader(d, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+    return (d, l), (None, None)
+
 

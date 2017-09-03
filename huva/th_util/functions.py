@@ -11,12 +11,16 @@ class NegateGradient(Function):
     """ 
     this function negates gradient without changing forward pass, useful in minimax context
     """
+    def __init__(self, multiplier=-1):
+        self.multiplier = multiplier
 
     def forward(self, input):
-        return input
+        # 1e-10 necessary for avoiding getting optimized away
+        # apparently PyTorch 0.20 introduced more graph optimization
+        return input + 1e-10 
 
     def backward(self, grad_output):
-        return - grad_output
+        return grad_output * self.multiplier
 
 
 class SpatialGatherHWC(Function):
