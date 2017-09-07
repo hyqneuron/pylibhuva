@@ -7,6 +7,10 @@ from .cuda import cpu_spatial_gather_hwc,   cuda_spatial_gather_hwc,            
 from .base import new_as
 
 
+def invisible_loss(loss):
+    return loss - loss.detach()
+
+
 class NegateGradient(Function):
     """ 
     this function negates gradient without changing forward pass, useful in minimax context

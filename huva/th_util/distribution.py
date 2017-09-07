@@ -420,3 +420,32 @@ class AltGaussian(Gaussian):
         var    = Variable(self.prior_var.   expand_as(template.data))
         return mean, logvar, var
 
+
+class Categorical(Distribution):
+
+    def __init__(self, softmax=False):
+        super(Categorical, self).__init__()
+        self.softmax = softmax
+
+    def forward(self, logit):
+        p = F.softmax(logit) if self.softmax else logit
+        logp = (p+1e-8).log()
+        return (p, logp)
+
+    def logP(self, x, P):
+        p, logp = P
+        # assuming x is one-hot
+        return x * logp
+
+    def prior_P(self, template):
+        p = new_as(template.data)
+        p.fill_(1/float(p.size(1)))
+        logp = (p+1e-8).log()
+        return Variable(p), Variable(logp)
+
+    def sample(self, P):
+        p, logp = P
+        # gumbel_max accepts 4D inputs while multinomial_max does not
+        sample = gumbel_max(logp.data)
+        return Variable(sample)
+

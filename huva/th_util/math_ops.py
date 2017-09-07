@@ -67,7 +67,7 @@ def gumbel_noise(x, eps=1e-10):
 def gumbel_max(x, out, T=None):
     """ x: logit, or output of log_softmax """
     noisy_x = x + gumbel_noise(x)
-    max_x = noisy_x.max(1)[0].expand_as(x)
+    max_x = noisy_x.max(1, keepdim=True)[0].expand_as(x)
     return torch.eq(max_x, noisy_x, out=out).float()
 
 

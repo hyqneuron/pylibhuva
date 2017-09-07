@@ -12,7 +12,7 @@ from .optimizers import *   # monitor gradient descent
 from .nn_stats import *     # nn statistics
 from .visualize import *    # guided backpropagation visualization
 
-from .functions import NegateGradient
+from .functions import NegateGradient, invisible_loss
 
 from .tests import *
 
