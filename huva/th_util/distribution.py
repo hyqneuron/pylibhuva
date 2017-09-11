@@ -54,20 +54,22 @@ class Distribution(nn.Module):
         return '{} ({})'.format(self.__class__.__name__, additional)
 
 
-class Coder(nn.Module):
+class Coder(nn.Sequential):
     """
     A Coder combines a list of nn.Modules with a Distribution.  It maps an input value to an output distribution with
     the help that list of layers.
     """
 
     def __init__(self, layers, distribution):
-        super(Coder, self).__init__()
-        self.layers       = nn.Sequential(*layers)
+        super(Coder, self).__init__(*layers)
+        self.layers = layers
         self.distribution = distribution
 
     def forward(self, x):
-        raw = self.layers(x)
-        P   = self.distribution(raw)
+        inputs = x
+        for layer in self.layers:
+            inputs = layer(inputs)
+        P   = self.distribution(inputs)
         return P
 
     def __getattr__(self, key):
@@ -425,10 +427,10 @@ class Categorical(Distribution):
 
     def __init__(self, softmax=False):
         super(Categorical, self).__init__()
-        self.softmax = softmax
+        self.softmax = softmax  # whether to include an implicit softmax
 
-    def forward(self, logit):
-        p = F.softmax(logit) if self.softmax else logit
+    def forward(self, p):
+        p = F.softmax(p) if self.softmax else p
         logp = (p+1e-8).log()
         return (p, logp)
 
@@ -439,9 +441,10 @@ class Categorical(Distribution):
 
     def prior_P(self, template):
         p = new_as(template.data)
-        p.fill_(1/float(p.size(1)))
+        num_categories = float(p.size(1))
+        p.fill_(1/num_categories)
         logp = (p+1e-8).log()
-        return Variable(p), Variable(logp)
+        return (Variable(p), Variable(logp))
 
     def sample(self, P):
         p, logp = P
