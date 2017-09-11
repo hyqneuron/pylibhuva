@@ -406,41 +406,51 @@ class MultiFolderDataset(Dataset):
 
 
 
-def make_data_x(set_files, set_rootfolder, batch_size, image_size=64, normalization=None, num_workers=2, transform=None):
+def make_data_x(set_files, set_rootfolder, batch_size, image_size=64, crop_size=64, normalization=None, num_workers=2, transform=None):
     # code shared by make_data_mini_imagenet and make_data_omniglot
     if transform is None:
-        trans = [
+        assert crop_size <= image_size
+        trans_train = [
             torchvision.transforms.Scale(image_size),
-            torchvision.transforms.CenterCrop(image_size),
+            torchvision.transforms.RandomCrop(crop_size),
+            ToTensor(),
+        ]
+        trans_test = [
+            torchvision.transforms.Scale(crop_size),
+            torchvision.transforms.RandomCrop(crop_size),
             ToTensor(),
         ]
         if normalization is not None:
-            trans.append(torchvision.transforms.Normalize(*normalization))
-        transform = torchvision.transforms.Compose(trans)
-    dataset_train = FolderDataset(set_rootfolder['train'], set_files['train'], transform)
-    dataset_test  = FolderDataset(set_rootfolder['test'],  set_files['test'],  transform)
+            trans_train.append(torchvision.transforms.Normalize(*normalization))
+            trans_test .append(torchvision.transforms.Normalize(*normalization))
+        trans_train = torchvision.transforms.Compose(trans_train)
+        trans_test  = torchvision.transforms.Compose(trans_test)
+    else:
+        trans_train, trans_test = transform, transform
+    dataset_train = FolderDataset(set_rootfolder['train'], set_files['train'], trans_train)
+    dataset_test  = FolderDataset(set_rootfolder['test'],  set_files['test'],  trans_test)
     loader_train = DataLoader(dataset_train,batch_size=batch_size, shuffle=True,  num_workers=num_workers, pin_memory=True)
     loader_test  = DataLoader(dataset_test, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
     return (dataset_train, loader_train), (dataset_test, loader_test)
 
 
-def make_data_mini_imagenet(batch_size, image_size=64, normalize='01', num_workers=2, transform=None):
+def make_data_mini_imagenet(batch_size, image_size=64, crop_size=64, normalize='01', num_workers=2, transform=None):
     set_files, set_rootfolder = organize_mini_imagenet()
     normalization = (None if normalize is None else 
                     ([0.3, 0.3, 0.3],[0.3, 0.3, 0.3]) if normalize=='01' else   # 0-mean, 1-variance
                     ([0.5, 0.5, 0.5],[0.5, 0.5, 0.5]))                          # tanh range
-    return make_data_x(set_files, set_rootfolder, batch_size, image_size, normalization, num_workers, transform)
+    return make_data_x(set_files, set_rootfolder, batch_size, image_size, crop_size, normalization, num_workers, transform)
 
 
-def make_data_omniglot(batch_size, image_size=64, normalize='01', num_workers=2, transform=None):
+def make_data_omniglot(batch_size, image_size=64, crop_size=64, normalize='01', num_workers=2, transform=None):
     set_files, set_rootfolder = organize_omniglot()
     normalization = (None if normalize is None else 
                     ([0.9220],[0.2680]) if normalize=='01' else     # 0-mean, 1-variance
                     ([0.5],[0.5]))                                  # tanh range
-    return make_data_x(set_files, set_rootfolder, batch_size, image_size, normalization, num_workers, transform)
+    return make_data_x(set_files, set_rootfolder, batch_size, image_size, crop_size, normalization, num_workers, transform)
 
-def make_data_omniglot_full(batch_size, image_size=64, normalize='01', num_workers=2, transform=None):
-    (d,l), (dt,lt) = make_data_omniglot(batch_size, image_size, normalize, 1, transform)
+def make_data_omniglot_full(batch_size, image_size=64, crop_size=64, normalize='01', num_workers=2, transform=None):
+    (d,l), (dt,lt) = make_data_omniglot(batch_size, image_size, crop_size, normalize, 1, transform)
     d = MultiFolderDataset([d,dt])
     l = DataLoader(d, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
     return (d, l), (None, None)
