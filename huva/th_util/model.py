@@ -234,7 +234,7 @@ class SparsePointwiseConv2d(nn.Module):
         assert N==1 and C==self.in_channels
         hwc1 = c1hw.permute(0, 2, 3, 1).contiguous()# this one requires contiguous
         kc1 = FS.SpatialGatherHWC()(hwc1, indices)
-        kc2 = self._backend.Linear()(kc1, self.weight)
+        kc2 = F.linear(kc1, self.weight)
         hwc2 = FS.SpatialScatterHWC(H, W)(kc2, indices)
         c2hw = hwc2.permute(0, 3, 1, 2).contiguous()
         return c2hw
